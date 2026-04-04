@@ -63,8 +63,9 @@ river> new
 | `flop <c1> <c2> <c3>` | Set the three flop cards |
 | `turn <card>` | Set the turn card |
 | `river <card>` | Set the river card |
-| `pot <pot> <bet>` | Calculate pot odds |
+| `pot <pot> <bet>` | Calculate pot odds (should I call?) |
 | `pot <bet>` | Pot odds using the tracked pot total |
+| `bet <amount> [pot_size]` | Analyze a bet you're considering |
 | `table [players] [position]` | Show or update the table layout |
 | `play <pos> <action> [amount]` | Record a player action (fold, check, call, raise, allin) |
 | `pos <position>` | Update your position |

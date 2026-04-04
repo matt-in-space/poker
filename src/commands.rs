@@ -2,7 +2,7 @@ use colored::Colorize;
 
 use crate::card::Card;
 use crate::error::PokerError;
-use crate::eval;
+use crate::eval::{self, HandStrength};
 use crate::hand_state::{Action, ActionEntry, HandState, Street};
 use crate::outs;
 use crate::position::Position;
@@ -26,6 +26,7 @@ pub fn execute(state: &mut HandState, input: &str) -> Result<Option<String>, Pok
         "turn" => cmd_turn(state, args),
         "river" => cmd_river(state, args),
         "pot" => cmd_pot(state, args),
+        "bet" => cmd_bet(state, args),
         "table" => cmd_table(state, args),
         "play" => cmd_play(state, args),
         "pos" => cmd_pos(state, args),
@@ -150,6 +151,8 @@ fn cmd_flop(state: &mut HandState, args: &[&str]) -> Result<Option<String>, Poke
         ));
     }
 
+    output.push_str(&format!("\n{}", betting_suggestion(&made, analysis.equity_percent)));
+
     Ok(Some(output))
 }
 
@@ -204,6 +207,8 @@ fn cmd_turn(state: &mut HandState, args: &[&str]) -> Result<Option<String>, Poke
             analysis.total_outs, analysis.equity_percent
         ));
     }
+
+    output.push_str(&format!("\n{}", betting_suggestion(&made, analysis.equity_percent)));
 
     Ok(Some(output))
 }
@@ -317,6 +322,138 @@ fn equity_comparison(state: &HandState, odds: &PotOdds) -> String {
     String::new()
 }
 
+fn betting_suggestion(made: &eval::MadeHand, equity: f64) -> String {
+    let strength = made.strength();
+
+    let suggestion = match strength {
+        HandStrength::Monster => "Strong value hand — bet 2/3 to full pot for value",
+        HandStrength::Strong => "Good hand — bet 1/2 to 2/3 pot for value and protection",
+        HandStrength::Medium => {
+            if equity >= 30.0 {
+                "Decent hand with draws — bet 1/2 pot for value and as a semi-bluff"
+            } else {
+                "Decent hand — bet 1/3 to 1/2 pot for thin value, or check to control pot"
+            }
+        }
+        HandStrength::Weak => {
+            if equity >= 30.0 {
+                "Weak made hand but good draws — consider a semi-bluff (1/2 pot)"
+            } else {
+                "Weak hand, few outs — check and look to see a cheap card"
+            }
+        }
+        HandStrength::Nothing => {
+            if equity >= 35.0 {
+                "No made hand but strong draw — good semi-bluff candidate (1/2 to 2/3 pot)"
+            } else if equity >= 20.0 {
+                "No made hand, moderate draw — check or take a small stab (1/3 pot)"
+            } else {
+                "Nothing here — check and fold to aggression, or bluff on a good board"
+            }
+        }
+    };
+
+    format!("Suggestion: {suggestion}")
+}
+
+fn cmd_bet(state: &mut HandState, args: &[&str]) -> Result<Option<String>, PokerError> {
+    if state.hole_cards.is_none() {
+        return Err(PokerError::NoDeal);
+    }
+    if state.board.is_empty() {
+        return Err(PokerError::WrongStreet {
+            expected: "No board yet — 'bet' is for post-flop. Use 'deal' for preflop guidance",
+        });
+    }
+
+    let (bet_size, pot_size) = match args.len() {
+        1 => {
+            let bet: u64 = args[0].parse().map_err(|_| PokerError::WrongArgCount {
+                command: "bet",
+                usage: "<amount> [pot_size]",
+            })?;
+            if state.pot == 0 {
+                return Err(PokerError::WrongArgCount {
+                    command: "bet",
+                    usage: "<amount> <pot_size>  (no tracked pot — provide both values)",
+                });
+            }
+            (bet, state.pot)
+        }
+        2 => {
+            let bet: u64 = args[0].parse().map_err(|_| PokerError::WrongArgCount {
+                command: "bet",
+                usage: "<amount> <pot_size>",
+            })?;
+            let pot: u64 = args[1].parse().map_err(|_| PokerError::WrongArgCount {
+                command: "bet",
+                usage: "<amount> <pot_size>",
+            })?;
+            (bet, pot)
+        }
+        _ => {
+            return Err(PokerError::WrongArgCount {
+                command: "bet",
+                usage: "<amount> [pot_size]",
+            });
+        }
+    };
+
+    let pct = if pot_size > 0 {
+        (bet_size as f64 / pot_size as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    let sizing_label = if pct <= 20.0 {
+        "very small (under 1/4 pot)"
+    } else if pct <= 40.0 {
+        "small (1/4 to 1/3 pot)"
+    } else if pct <= 60.0 {
+        "half pot"
+    } else if pct <= 80.0 {
+        "2/3 pot"
+    } else if pct <= 110.0 {
+        "pot-sized"
+    } else {
+        "overbet"
+    };
+
+    let mut output = format!(
+        "Betting ${bet_size} into ${pot_size} pot ({pct:.0}% pot — {sizing_label})\n"
+    );
+
+    let hole = state.hole_cards.unwrap();
+    let made = eval::evaluate(&hole, &state.board);
+
+    output.push_str(&format!("Your hand: {}\n", made.to_string().bold()));
+
+    if state.street != Street::River {
+        let analysis = outs::analyze_outs(&hole, &state.board, state.street);
+        let suggestion = betting_suggestion(&made, analysis.equity_percent);
+        output.push_str(&format!("{suggestion}\n"));
+
+        // Show what opponent needs to call
+        let opp_odds = PotOdds::calculate(pot_size + bet_size, bet_size);
+        output.push_str(&format!(
+            "Opponent needs {:.1}% equity to call",
+            opp_odds.required_equity
+        ));
+    } else {
+        // River — no draws, just hand strength
+        let suggestion = betting_suggestion(&made, 0.0);
+        output.push_str(&format!("{suggestion}\n"));
+
+        let opp_odds = PotOdds::calculate(pot_size + bet_size, bet_size);
+        output.push_str(&format!(
+            "Opponent needs {:.1}% equity to call",
+            opp_odds.required_equity
+        ));
+    }
+
+    Ok(Some(output))
+}
+
 fn cmd_table(state: &mut HandState, args: &[&str]) -> Result<Option<String>, PokerError> {
     if let Some(n_str) = args.first() {
         if let Ok(n) = n_str.parse::<u8>() {
@@ -417,8 +554,9 @@ Commands:
   flop <c1> <c2> <c3>             Set flop cards
   turn <card>                      Set turn card
   river <card>                     Set river card
-  pot <pot> <bet>                  Calculate pot odds
+  pot <pot> <bet>                  Calculate pot odds (should I call?)
   pot <bet>                        Pot odds using tracked pot
+  bet <amount> [pot_size]          Analyze a bet you're considering
   table [players] [position]       Show/update table layout
   play <pos> <action> [amount]     Record a player action
   pos <position>                   Update your position
@@ -634,7 +772,29 @@ equity estimate and tells you whether the call is profitable.
 
 Note: This is 'direct' pot odds only. Implied odds (money you might
 win on later streets) can make some calls profitable even when direct
-pot odds say fold — but that requires judgment the tool can't provide.";
+pot odds say fold — but that requires judgment the tool can't provide.
+
+Betting (when you're first to act)
+-----------------------------------
+The 'pot' command helps with calling. The 'bet' command helps when
+you're the one deciding whether and how much to bet:
+
+  bet 150          Analyze a $150 bet (uses tracked pot)
+  bet 150 300      Analyze a $150 bet into a $300 pot
+
+It shows the sizing as a fraction of the pot, your hand strength,
+a suggestion based on your hand + draws, and how much equity your
+opponent needs to call.
+
+Common bet sizings:
+  1/3 pot    Small — used for thin value or cheap bluffs
+  1/2 pot    Standard — good default for most situations
+  2/3 pot    Medium — value bets, semi-bluffs with strong draws
+  Full pot   Large — strong value or polarized bluffs
+  Overbet    Over full pot — very polarized (nuts or bluff)
+
+The flop and turn commands also show a suggestion line based on
+your hand strength and draw equity to guide your action.";
 
 const GUIDE_MADE_HANDS: &str = "\
 Made Hand Rankings

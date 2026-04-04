@@ -77,6 +77,35 @@ impl fmt::Display for MadeHand {
     }
 }
 
+/// Rough hand strength tier for post-flop betting guidance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum HandStrength {
+    Nothing,    // high card, no draws
+    Weak,       // bottom/middle pair, pocket pair below top card
+    Medium,     // top pair, overpair
+    Strong,     // two pair, trips/set
+    Monster,    // straight, flush, full house, quads, straight flush
+}
+
+impl MadeHand {
+    pub fn strength(&self) -> HandStrength {
+        match self {
+            MadeHand::HighCard(_) => HandStrength::Nothing,
+            MadeHand::Pair { quality, .. } => match quality {
+                PairQuality::Top | PairQuality::Overpair => HandStrength::Medium,
+                _ => HandStrength::Weak,
+            },
+            MadeHand::TwoPair { .. } => HandStrength::Strong,
+            MadeHand::ThreeOfAKind { .. } => HandStrength::Strong,
+            MadeHand::Straight(_) => HandStrength::Monster,
+            MadeHand::Flush => HandStrength::Monster,
+            MadeHand::FullHouse { .. } => HandStrength::Monster,
+            MadeHand::FourOfAKind(_) => HandStrength::Monster,
+            MadeHand::StraightFlush(_) => HandStrength::Monster,
+        }
+    }
+}
+
 pub fn evaluate(hole: &[Card; 2], board: &[Card]) -> MadeHand {
     let all: Vec<Card> = hole.iter().chain(board.iter()).copied().collect();
     let hole_ranks: Vec<Rank> = hole.iter().map(|c| c.rank).collect();
