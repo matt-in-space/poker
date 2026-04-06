@@ -1,23 +1,14 @@
 use crate::card::{Card, Rank};
 use crate::position::Position;
 use std::collections::HashSet;
-use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Recommendation {
     Open,
     Fold,
     ThreeBet,
-}
-
-impl fmt::Display for Recommendation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Recommendation::Open => write!(f, "OPEN"),
-            Recommendation::Fold => write!(f, "FOLD"),
-            Recommendation::ThreeBet => write!(f, "3-BET"),
-        }
-    }
+    IsoRaise,
+    Call,
 }
 
 #[derive(Debug, Clone)]
@@ -199,23 +190,51 @@ const BTN_3BET_6: &str = BTN_3BET_9;
 const SB_OPEN_6: &str = SB_OPEN_9;
 const SB_3BET_6: &str = SB_3BET_9;
 
-pub fn recommend(hole: &HoleCardType, position: Position, num_players: u8) -> Recommendation {
+pub fn recommend(
+    hole: &HoleCardType,
+    position: Position,
+    num_players: u8,
+    action: crate::hand_state::Action,
+) -> Recommendation {
+    use crate::hand_state::Action;
+
     let is_6max = num_players <= 6;
     let key = hole.key();
 
     let (open_str, threebet_str) = get_range_strings(position, is_6max);
-
     let threebet_range = parse_range(threebet_str);
-    if threebet_range.contains(&key) {
-        return Recommendation::ThreeBet;
-    }
-
     let open_range = parse_range(open_str);
-    if open_range.contains(&key) {
-        return Recommendation::Open;
-    }
 
-    Recommendation::Fold
+    let in_3bet = threebet_range.contains(&key);
+    let in_open = open_range.contains(&key);
+
+    match action {
+        Action::FirstIn => {
+            if in_3bet {
+                Recommendation::ThreeBet
+            } else if in_open {
+                Recommendation::Open
+            } else {
+                Recommendation::Fold
+            }
+        }
+        Action::FacingLimp => {
+            if in_3bet || in_open {
+                Recommendation::IsoRaise
+            } else {
+                Recommendation::Fold
+            }
+        }
+        Action::FacingRaise => {
+            if in_3bet {
+                Recommendation::ThreeBet
+            } else if in_open {
+                Recommendation::Call
+            } else {
+                Recommendation::Fold
+            }
+        }
+    }
 }
 
 fn get_range_strings(position: Position, is_6max: bool) -> (&'static str, &'static str) {
@@ -249,6 +268,7 @@ fn get_range_strings(position: Position, is_6max: bool) -> (&'static str, &'stat
 mod tests {
     use super::*;
     use crate::card::Card;
+    use crate::hand_state::Action;
 
     fn make_hole(s1: &str, s2: &str) -> HoleCardType {
         HoleCardType::from_cards(Card::parse(s1).unwrap(), Card::parse(s2).unwrap())
@@ -275,21 +295,21 @@ mod tests {
     #[test]
     fn test_premium_utg() {
         let aa = make_hole("Ah", "Ad");
-        assert_eq!(recommend(&aa, Position::UTG, 9), Recommendation::ThreeBet);
+        assert_eq!(recommend(&aa, Position::UTG, 9, Action::FirstIn), Recommendation::ThreeBet);
     }
 
     #[test]
     fn test_trash_utg() {
         let hand = make_hole("7h", "2d");
-        assert_eq!(recommend(&hand, Position::UTG, 9), Recommendation::Fold);
+        assert_eq!(recommend(&hand, Position::UTG, 9, Action::FirstIn), Recommendation::Fold);
     }
 
     #[test]
     fn test_btn_wider() {
         // 87s should be open from BTN but fold from UTG
         let hand = make_hole("8h", "7h");
-        assert_eq!(recommend(&hand, Position::BTN, 9), Recommendation::Open);
-        assert_eq!(recommend(&hand, Position::UTG, 9), Recommendation::Fold);
+        assert_eq!(recommend(&hand, Position::BTN, 9, Action::FirstIn), Recommendation::Open);
+        assert_eq!(recommend(&hand, Position::UTG, 9, Action::FirstIn), Recommendation::Fold);
     }
 
     #[test]
@@ -305,6 +325,29 @@ mod tests {
     fn test_6max_wider_utg() {
         // Suited connectors like T9s should be open from UTG in 6-max
         let hand = make_hole("Th", "9h");
-        assert_eq!(recommend(&hand, Position::UTG, 6), Recommendation::Open);
+        assert_eq!(recommend(&hand, Position::UTG, 6, Action::FirstIn), Recommendation::Open);
+    }
+
+    #[test]
+    fn test_facing_limp() {
+        // An open-range hand facing a limp should be ISO-RAISE
+        let hand = make_hole("Ah", "Js");
+        assert_eq!(recommend(&hand, Position::CO, 9, Action::FacingLimp), Recommendation::IsoRaise);
+        // Trash facing a limp is still fold
+        let trash = make_hole("7h", "2d");
+        assert_eq!(recommend(&trash, Position::CO, 9, Action::FacingLimp), Recommendation::Fold);
+    }
+
+    #[test]
+    fn test_facing_raise() {
+        // A 3-bet hand facing a raise should still 3-bet
+        let aa = make_hole("Ah", "Ad");
+        assert_eq!(recommend(&aa, Position::CO, 9, Action::FacingRaise), Recommendation::ThreeBet);
+        // An open-range hand facing a raise should call
+        let hand = make_hole("8h", "7h");
+        assert_eq!(recommend(&hand, Position::BTN, 9, Action::FacingRaise), Recommendation::Call);
+        // Trash facing a raise is fold
+        let trash = make_hole("7h", "2d");
+        assert_eq!(recommend(&trash, Position::BTN, 9, Action::FacingRaise), Recommendation::Fold);
     }
 }

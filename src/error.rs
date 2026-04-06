@@ -6,13 +6,12 @@ use crate::card::Card;
 pub enum PokerError {
     InvalidCard(String),
     DuplicateCard(Card),
-    WrongStreet { expected: &'static str },
     InvalidPosition(String),
     WrongArgCount {
         command: &'static str,
         usage: &'static str,
     },
-    NoDeal,
+    NotConfigured,
 }
 
 impl fmt::Display for PokerError {
@@ -24,9 +23,6 @@ impl fmt::Display for PokerError {
             PokerError::DuplicateCard(card) => {
                 write!(f, "Card {card} is already in play")
             }
-            PokerError::WrongStreet { expected } => {
-                write!(f, "{expected}")
-            }
             PokerError::InvalidPosition(s) => {
                 write!(
                     f,
@@ -36,8 +32,8 @@ impl fmt::Display for PokerError {
             PokerError::WrongArgCount { command, usage } => {
                 write!(f, "Usage: {command} {usage}")
             }
-            PokerError::NoDeal => {
-                write!(f, "No hand in progress — use 'deal' first")
+            PokerError::NotConfigured => {
+                write!(f, "Not configured yet — use 'players' and 'pos' first")
             }
         }
     }

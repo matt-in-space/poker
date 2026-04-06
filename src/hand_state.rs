@@ -1,116 +1,58 @@
 use crate::card::Card;
-use crate::error::PokerError;
-use crate::position::Position;
-use std::collections::HashSet;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Street {
-    Preflop,
-    Flop,
-    Turn,
-    River,
-}
-
-impl std::fmt::Display for Street {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Street::Preflop => write!(f, "Preflop"),
-            Street::Flop => write!(f, "Flop"),
-            Street::Turn => write!(f, "Turn"),
-            Street::River => write!(f, "River"),
-        }
-    }
-}
+use crate::position::{self, Position};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    Fold,
-    Check,
-    Call,
-    Raise(u64),
-    AllIn,
-}
-
-impl std::fmt::Display for Action {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Action::Fold => write!(f, "fold"),
-            Action::Check => write!(f, "check"),
-            Action::Call => write!(f, "call"),
-            Action::Raise(amt) => write!(f, "raise {amt}"),
-            Action::AllIn => write!(f, "all-in"),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct ActionEntry {
-    pub position: Position,
-    pub action: Action,
-    pub street: Street,
+    FirstIn,
+    FacingLimp,
+    FacingRaise,
 }
 
 pub struct HandState {
     pub hole_cards: Option<[Card; 2]>,
-    pub position: Option<Position>,
     pub num_players: u8,
-    pub board: Vec<Card>,
-    pub street: Street,
-    pub pot: u64,
-    pub actions: Vec<ActionEntry>,
+    pub position_index: usize,
+    pub configured: bool,
+    pub action: Action,
 }
 
 impl HandState {
     pub fn new() -> Self {
         HandState {
             hole_cards: None,
-            position: None,
             num_players: 9,
-            board: Vec::new(),
-            street: Street::Preflop,
-            pot: 0,
-            actions: Vec::new(),
+            position_index: 0,
+            configured: false,
+            action: Action::FirstIn,
         }
     }
 
     pub fn reset(&mut self) {
-        let players = self.num_players;
-        *self = HandState::new();
-        self.num_players = players;
+        self.hole_cards = None;
+        self.action = Action::FirstIn;
     }
 
-    pub fn cards_in_play(&self) -> HashSet<Card> {
-        let mut set = HashSet::new();
-        if let Some(hole) = &self.hole_cards {
-            set.insert(hole[0]);
-            set.insert(hole[1]);
+    pub fn position(&self) -> Option<Position> {
+        if !self.configured {
+            return None;
         }
-        for &c in &self.board {
-            set.insert(c);
-        }
-        set
+        let positions = position::positions_for_table_size(self.num_players);
+        Some(positions[self.position_index % positions.len()])
     }
 
-    pub fn check_not_duplicate(&self, card: Card) -> Result<(), PokerError> {
-        if self.cards_in_play().contains(&card) {
-            Err(PokerError::DuplicateCard(card))
+    pub fn advance_position(&mut self) {
+        let positions = position::positions_for_table_size(self.num_players);
+        let len = positions.len();
+        self.position_index = (self.position_index + len - 1) % len;
+    }
+
+    pub fn set_position(&mut self, pos: Position) -> bool {
+        let positions = position::positions_for_table_size(self.num_players);
+        if let Some(idx) = positions.iter().position(|&p| p == pos) {
+            self.position_index = idx;
+            true
         } else {
-            Ok(())
+            false
         }
-    }
-
-    pub fn check_duplicates(&self, cards: &[Card]) -> Result<(), PokerError> {
-        let in_play = self.cards_in_play();
-        let mut seen = HashSet::new();
-        for &card in cards {
-            if in_play.contains(&card) || !seen.insert(card) {
-                return Err(PokerError::DuplicateCard(card));
-            }
-        }
-        Ok(())
-    }
-
-    pub fn actions_on_street(&self, street: Street) -> Vec<&ActionEntry> {
-        self.actions.iter().filter(|a| a.street == street).collect()
     }
 }
