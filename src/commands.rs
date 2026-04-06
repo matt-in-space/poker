@@ -294,10 +294,14 @@ fn cmd_river(state: &mut HandState, args: &[&str]) -> Result<Option<String>, Pok
 }
 
 fn cmd_odds(state: &mut HandState, args: &[&str]) -> Result<Option<String>, PokerError> {
+    if args.is_empty() {
+        return do_hand_summary(state);
+    }
+
     if args.len() != 2 {
         return Err(PokerError::WrongArgCount {
             command: "odds",
-            usage: "<bet> <pot>",
+            usage: "[<bet> <pot>]  or  no args for hand summary",
         });
     }
 
@@ -377,6 +381,169 @@ fn do_river(state: &mut HandState, card: Card) -> Result<Option<String>, PokerEr
         "Board: {board_str}\nFinal hand: {}",
         made.to_string().green().bold()
     )))
+}
+
+fn do_hand_summary(state: &HandState) -> Result<Option<String>, PokerError> {
+    if state.hole_cards.is_none() {
+        return Err(PokerError::NoDeal);
+    }
+    let hole = state.hole_cards.as_ref().unwrap();
+
+    if state.board.is_empty() {
+        return Ok(Some("Deal a flop first to see outs and betting advice.".to_string()));
+    }
+
+    let board_str = state
+        .board
+        .iter()
+        .map(|c| c.to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let made = eval::evaluate(hole, &state.board);
+
+    let mut output = format!(
+        "Board: {board_str}\nMade hand: {}\n",
+        made.to_string().bold()
+    );
+
+    if state.street != Street::River {
+        let analysis = outs::analyze_outs(hole, &state.board, state.street);
+        let rule = if state.street == Street::Flop {
+            "rule of 4"
+        } else {
+            "rule of 2"
+        };
+
+        if !analysis.draws.is_empty() {
+            output.push('\n');
+            for draw in &analysis.draws {
+                let outs_str = draw
+                    .outs
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                output.push_str(&format!(
+                    "  {} ({} outs): {}\n",
+                    draw.draw_type,
+                    draw.outs.len(),
+                    outs_str
+                ));
+            }
+            output.push_str(&format!(
+                "\nTotal: {} outs (~{:.0}% equity, {})\n",
+                analysis.total_outs, analysis.equity_percent, rule
+            ));
+        } else {
+            output.push_str("No draws.\n");
+        }
+
+        output.push_str(&format!(
+            "\n{}",
+            bet_suggestion(&made, analysis.equity_percent)
+        ));
+    } else {
+        // River — no draws, just hand strength
+        output.push_str(&format!("\n{}", bet_suggestion(&made, 0.0)));
+    }
+
+    Ok(Some(output))
+}
+
+fn bet_suggestion(made: &eval::MadeHand, equity: f64) -> String {
+    use eval::MadeHand::*;
+    use eval::PairQuality::*;
+
+    let (action, sizing, why) = match made {
+        StraightFlush(_) | FourOfAKind(_) => (
+            "Bet for value",
+            "2/3 to full pot",
+            "You have a near-unbeatable hand. Bet big to get paid off.",
+        ),
+        FullHouse { .. } => (
+            "Bet for value",
+            "2/3 to full pot",
+            "Very strong hand. Bet big — you want opponents to call with worse.",
+        ),
+        Flush | Straight(_) => (
+            "Bet for value",
+            "1/2 to 2/3 pot",
+            "Strong made hand. Bet to build the pot while you're ahead.",
+        ),
+        ThreeOfAKind { is_set: true, .. } => (
+            "Bet for value",
+            "1/2 to 2/3 pot",
+            "A set is well-disguised. Opponents won't see it coming — bet for value.",
+        ),
+        ThreeOfAKind { is_set: false, .. } => (
+            "Bet cautiously",
+            "1/3 to 1/2 pot",
+            "Trips (board pair + your card) is strong but obvious. Bet smaller — opponents may already be wary.",
+        ),
+        TwoPair { .. } => (
+            "Bet for value",
+            "1/2 to 2/3 pot",
+            "Two pair is strong but vulnerable to straights and flushes. Bet to charge draws.",
+        ),
+        Pair { quality: Overpair, .. } => (
+            "Bet for value",
+            "1/2 to 2/3 pot",
+            "Your pocket pair beats everything on the board. Bet to protect against overcards hitting.",
+        ),
+        Pair { quality: Top, .. } => (
+            "Bet for value/protection",
+            "1/3 to 1/2 pot",
+            "Top pair is decent but beatable. Bet enough to charge draws but don't overcommit.",
+        ),
+        Pair { quality: Second, .. } => {
+            if equity >= 25.0 {
+                (
+                    "Bet small or check",
+                    "1/3 pot",
+                    "Second pair plus draws gives you options. A small bet can take it down or build equity.",
+                )
+            } else {
+                (
+                    "Check",
+                    "—",
+                    "Second pair with no draws is marginal. Check to control the pot size.",
+                )
+            }
+        }
+        Pair { .. } => (
+            "Check",
+            "—",
+            "Weak pair — not worth betting. Check and see what develops.",
+        ),
+        HighCard(_) => {
+            if equity >= 35.0 {
+                (
+                    "Semi-bluff",
+                    "1/2 to 2/3 pot",
+                    "You have nothing now but a strong draw. Betting wins two ways: they fold, or you hit your draw.",
+                )
+            } else if equity >= 20.0 {
+                (
+                    "Check or small stab",
+                    "1/3 pot",
+                    "Weak draw. A small bet might take it down, but don't put too much in.",
+                )
+            } else {
+                (
+                    "Check/fold",
+                    "—",
+                    "No made hand, no draw. Give up unless you can bluff on a good board.",
+                )
+            }
+        }
+    };
+
+    if sizing == "—" {
+        format!("Suggestion: {}\n{}", action.bold(), why)
+    } else {
+        format!("Suggestion: {} ({})\n{}", action.bold(), sizing, why)
+    }
 }
 
 fn do_odds(state: &HandState, bet: u64, pot: u64) -> Result<Option<String>, PokerError> {
@@ -657,6 +824,7 @@ Commands:                                Shortcuts:
   turn <card>                              t<card>         e.g. t5d
   river <card>                             r<card>         e.g. r6h
   new                                      n
+  odds                                     Show outs, equity, and bet suggestion
   odds <bet> <pot>                         b<bet>p<pot>    e.g. b25p50
   limp                 Facing a limp (re-shows recommendation)
   raise                Facing a raise (re-shows recommendation)
