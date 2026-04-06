@@ -207,8 +207,9 @@ fn cmd_new(state: &mut HandState) -> Result<Option<String>, PokerError> {
     state.reset();
     state.advance_position();
     let pos = state.position().unwrap();
+    let table = table_display::render_table(state.num_players, Some(pos));
     Ok(Some(format!(
-        "Position advanced to {} ({}).",
+        "{table}\n\nPosition advanced to {} ({}).",
         pos.short_name(),
         pos.long_name()
     )))
@@ -630,11 +631,8 @@ pub fn format_recommendation(state: &HandState) -> String {
         Action::FacingRaise => "  (facing raise)",
     };
 
-    let table = table_display::render_table(state.num_players, Some(position));
-
     format!(
-        "{table}\n\n\
-         Hand: {card1} {card2}  ({label} — {category})\n\
+        "Hand: {card1} {card2}  ({label} — {category})\n\
          Position: {pos} ({long}){action_label}\n\
          Recommendation: {rec}\n\
          {desc}",
@@ -666,8 +664,15 @@ fn cmd_players(state: &mut HandState, args: &[&str]) -> Result<Option<String>, P
     let positions = position::positions_for_table_size(state.num_players);
     let train: Vec<&str> = positions.iter().map(|p| p.short_name()).collect();
 
+    let table_str = if state.configured {
+        let pos = state.position().unwrap();
+        format!("{}\n\n", table_display::render_table(state.num_players, Some(pos)))
+    } else {
+        format!("{}\n\n", table_display::render_table(state.num_players, None))
+    };
+
     let mut output = format!(
-        "Players set to {}.\nPositions: {}\n",
+        "{table_str}Players set to {}.\nPositions: {}\n",
         state.num_players,
         train.join(" -> ")
     );
@@ -712,8 +717,9 @@ fn cmd_pos(state: &mut HandState, args: &[&str]) -> Result<Option<String>, Poker
     state.set_position(position);
     state.configured = true;
 
+    let table = table_display::render_table(state.num_players, Some(position));
     let mut output = format!(
-        "Position set to {} ({}).",
+        "{table}\n\nPosition set to {} ({}).",
         position.short_name(),
         position.long_name()
     );
