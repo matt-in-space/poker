@@ -112,9 +112,19 @@ fn main() {
                 let _ = rl.add_history_entry(&line);
 
                 match commands::execute(&mut state, &line) {
-                    Ok(Some(output)) => println!("{output}"),
+                    Ok(Some(output)) => {
+                        print!("\x1B[2J\x1B[H"); // clear screen, cursor to top
+                        println!("{}", commands::format_status(&state).dimmed());
+                        println!("{}", "─".repeat(60).dimmed());
+                        println!("{output}");
+                    }
                     Ok(None) => {}
-                    Err(e) => eprintln!("{} {e}", "Error:".red().bold()),
+                    Err(e) => {
+                        print!("\x1B[2J\x1B[H");
+                        println!("{}", commands::format_status(&state).dimmed());
+                        println!("{}", "─".repeat(60).dimmed());
+                        eprintln!("{} {e}", "Error:".red().bold());
+                    }
                 }
             }
             Err(ReadlineError::Interrupted) => {

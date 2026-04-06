@@ -367,88 +367,17 @@ fn do_river(state: &mut HandState, card: Card) -> Result<Option<String>, PokerEr
     state.board.push(card);
     state.street = Street::River;
 
-    let hole = state.hole_cards.unwrap();
-    let made = eval::evaluate(&hole, &state.board);
-
-    let board_str = state
-        .board
-        .iter()
-        .map(|c| c.to_string())
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    Ok(Some(format!(
-        "Board: {board_str}\nFinal hand: {}",
-        made.to_string().green().bold()
-    )))
+    Ok(Some(format_board_analysis(state)))
 }
 
 fn do_hand_summary(state: &HandState) -> Result<Option<String>, PokerError> {
     if state.hole_cards.is_none() {
         return Err(PokerError::NoDeal);
     }
-    let hole = state.hole_cards.as_ref().unwrap();
-
     if state.board.is_empty() {
         return Ok(Some("Deal a flop first to see outs and betting advice.".to_string()));
     }
-
-    let board_str = state
-        .board
-        .iter()
-        .map(|c| c.to_string())
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    let made = eval::evaluate(hole, &state.board);
-
-    let mut output = format!(
-        "Board: {board_str}\nMade hand: {}\n",
-        made.to_string().bold()
-    );
-
-    if state.street != Street::River {
-        let analysis = outs::analyze_outs(hole, &state.board, state.street);
-        let rule = if state.street == Street::Flop {
-            "rule of 4"
-        } else {
-            "rule of 2"
-        };
-
-        if !analysis.draws.is_empty() {
-            output.push('\n');
-            for draw in &analysis.draws {
-                let outs_str = draw
-                    .outs
-                    .iter()
-                    .map(|c| c.to_string())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                output.push_str(&format!(
-                    "  {} ({} outs): {}\n",
-                    draw.draw_type,
-                    draw.outs.len(),
-                    outs_str
-                ));
-            }
-            output.push_str(&format!(
-                "\nTotal: {} outs (~{:.0}% equity, {})\n",
-                analysis.total_outs, analysis.equity_percent, rule
-            ));
-        } else {
-            output.push_str("No draws.\n");
-        }
-
-        output.push_str(&format!(
-            "\n{}",
-            bet_suggestion(&made, analysis.equity_percent)
-        ));
-    } else {
-        // River — no draws, just hand strength
-        output.push_str(&format!("\n{}", bet_suggestion(&made, 0.0)));
-    }
-
-    Ok(Some(output))
+    Ok(Some(format_board_analysis(state)))
 }
 
 fn bet_suggestion(made: &eval::MadeHand, equity: f64) -> String {
@@ -596,41 +525,54 @@ fn format_board_analysis(state: &HandState) -> String {
         .join(" ");
 
     let made = eval::evaluate(&hole, &state.board);
-    let analysis = outs::analyze_outs(&hole, &state.board, state.street);
 
-    let rule = if state.street == Street::Flop {
-        "rule of 4"
+    let mut output = if state.street == Street::River {
+        format!(
+            "Board: {board_str}\nFinal hand: {}\n",
+            made.to_string().green().bold()
+        )
     } else {
-        "rule of 2"
+        format!(
+            "Board: {board_str}\nMade hand: {}\n",
+            made.to_string().bold()
+        )
     };
 
-    let mut output = format!(
-        "Board: {board_str}\nMade hand: {}\n",
-        made.to_string().bold()
-    );
+    if state.street != Street::River {
+        let analysis = outs::analyze_outs(&hole, &state.board, state.street);
+        let rule = if state.street == Street::Flop {
+            "rule of 4"
+        } else {
+            "rule of 2"
+        };
 
-    if analysis.draws.is_empty() {
-        output.push_str("No draws.\n");
-    } else {
-        output.push('\n');
-        for draw in &analysis.draws {
-            let outs_str = draw
-                .outs
-                .iter()
-                .map(|c| c.to_string())
-                .collect::<Vec<_>>()
-                .join(" ");
+        if analysis.draws.is_empty() {
+            output.push_str("No draws.\n");
+        } else {
+            output.push('\n');
+            for draw in &analysis.draws {
+                let outs_str = draw
+                    .outs
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                output.push_str(&format!(
+                    "  {} ({} outs): {}\n",
+                    draw.draw_type,
+                    draw.outs.len(),
+                    outs_str
+                ));
+            }
             output.push_str(&format!(
-                "  {} ({} outs): {}\n",
-                draw.draw_type,
-                draw.outs.len(),
-                outs_str
+                "\nTotal: {} outs (~{:.0}% equity, {})\n",
+                analysis.total_outs, analysis.equity_percent, rule
             ));
         }
-        output.push_str(&format!(
-            "\nTotal: {} outs (~{:.0}% equity, {})\n",
-            analysis.total_outs, analysis.equity_percent, rule
-        ));
+
+        output.push_str(&format!("\n{}", bet_suggestion(&made, analysis.equity_percent)));
+    } else {
+        output.push_str(&format!("\n{}", bet_suggestion(&made, 0.0)));
     }
 
     output
@@ -842,4 +784,47 @@ Card notation: rank + suit (e.g. As, Td, 2c, KH)
 Positions: utg, utg1, utg2, mp, hj, co, btn, sb, bb";
 
     Ok(Some(help.to_string()))
+}
+
+pub fn format_status(state: &HandState) -> String {
+    let pos_name = state
+        .position()
+        .map(|p| p.short_name().to_string())
+        .unwrap_or_else(|| "?".to_string());
+
+    let mut parts = vec![format!("[{pos_name} · {} players]", state.num_players)];
+
+    if let Some([c1, c2]) = &state.hole_cards {
+        let hole_type = HoleCardType::from_cards(*c1, *c2);
+        parts.push(format!("Hand: {c1} {c2} ({})", hole_type.label()));
+    }
+
+    if !state.board.is_empty() {
+        let board_str = state
+            .board
+            .iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        parts.push(format!("Board: {board_str}"));
+
+        let hole = state.hole_cards.unwrap();
+        let made = eval::evaluate(&hole, &state.board);
+
+        if state.street != Street::River {
+            let analysis = outs::analyze_outs(&hole, &state.board, state.street);
+            if analysis.total_outs > 0 {
+                parts.push(format!(
+                    "{} · {} outs · ~{:.0}% equity",
+                    made, analysis.total_outs, analysis.equity_percent
+                ));
+            } else {
+                parts.push(format!("{} · no draws", made));
+            }
+        } else {
+            parts.push(format!("{}", made));
+        }
+    }
+
+    parts.join("  |  ")
 }
