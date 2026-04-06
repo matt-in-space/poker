@@ -107,10 +107,24 @@ fn parse_range(range_str: &str) -> HashSet<(u8, u8, bool)> {
         } else {
             match chars[2] {
                 's' | 'S' => {
-                    set.insert((high, low, true));
+                    if chars.len() > 3 && chars[3] == '+' {
+                        // e.g. "A5s+" means A5s, A6s, A7s, ..., AKs (high card fixed, low goes up)
+                        for v in low..high {
+                            set.insert((high, v, true));
+                        }
+                    } else {
+                        set.insert((high, low, true));
+                    }
                 }
                 'o' | 'O' => {
-                    set.insert((high, low, false));
+                    if chars.len() > 3 && chars[3] == '+' {
+                        // e.g. "A9o+" means A9o, ATo, AJo, AQo, AKo
+                        for v in low..high {
+                            set.insert((high, v, false));
+                        }
+                    } else {
+                        set.insert((high, low, false));
+                    }
                 }
                 '+' => {
                     // Pair+: e.g. "77+" means 77 through AA
@@ -149,40 +163,49 @@ fn rank_from_char(c: char) -> Option<u8> {
     }
 }
 
-// GTO-approximate opening ranges (first-in, raise or fold)
-// Adapted from standard 9-max charts
+// Preflop opening ranges, tightened for micro-stakes rake.
+// Based on Upswing Poker simplified GTO charts, adjusted ~3-5% tighter.
+// 3-bet ranges are polarized: premium value hands + low suited aces as bluffs
+// (A5s-A2s block AA/AK and have decent suited equity when called).
+//
+// These assume ~100bb stacks, NL cash games.
+// Source baseline: Upswing Poker / GTO Wizard simplified charts.
 
-const UTG_OPEN_9: &str = "AA KK QQ JJ TT 99 88 77 AKs AQs AJs ATs A9s A5s A4s KQs KJs KTs QJs QTs JTs AKo AQo";
+// --- 9-max ranges ---
+
+const UTG_OPEN_9: &str = "AA KK QQ JJ TT 99 88 77 AKs AQs AJs ATs KQs KJs QJs JTs AKo AQo";
 const UTG_3BET_9: &str = "AA KK QQ AKs";
 
-const UTG1_OPEN_9: &str = "AA KK QQ JJ TT 99 88 77 66 AKs AQs AJs ATs A9s A8s A5s A4s A3s KQs KJs KTs K9s QJs QTs JTs T9s AKo AQo AJo";
-const UTG1_3BET_9: &str = "AA KK QQ AKs";
+const UTG1_OPEN_9: &str = "AA KK QQ JJ TT 99 88 77 66 AKs AQs AJs ATs A9s KQs KJs KTs QJs QTs JTs T9s AKo AQo AJo";
+const UTG1_3BET_9: &str = "AA KK QQ AKs AKo";
 
-const UTG2_OPEN_9: &str = "AA KK QQ JJ TT 99 88 77 66 55 AKs AQs AJs ATs A9s A8s A5s A4s A3s A2s KQs KJs KTs K9s QJs QTs Q9s JTs J9s T9s AKo AQo AJo ATo";
+const UTG2_OPEN_9: &str = "AA KK QQ JJ TT 99 88 77 66 55 AKs AQs AJs ATs A9s A8s KQs KJs KTs QJs QTs JTs J9s T9s 98s AKo AQo AJo ATo";
 const UTG2_3BET_9: &str = "AA KK QQ AKs AKo";
 
-const MP_OPEN_9: &str = "AA KK QQ JJ TT 99 88 77 66 55 44 AKs AQs AJs ATs A9s A8s A7s A5s A4s A3s A2s KQs KJs KTs K9s K8s QJs QTs Q9s JTs J9s T9s 98s AKo AQo AJo ATo KQo";
-const MP_3BET_9: &str = "AA KK QQ JJ AKs AKo";
+const MP_OPEN_9: &str = "AA KK QQ JJ TT 99 88 77 66 55 44 AKs AQs AJs ATs A9s A8s A5s KQs KJs KTs K9s QJs QTs J9s T9s 98s 87s AKo AQo AJo ATo KQo";
+const MP_3BET_9: &str = "AA KK QQ JJ AKs A5s AKo";
 
-const HJ_OPEN_9: &str = "AA KK QQ JJ TT 99 88 77 66 55 44 33 AKs AQs AJs ATs A9s A8s A7s A6s A5s A4s A3s A2s KQs KJs KTs K9s K8s K7s QJs QTs Q9s Q8s JTs J9s T9s T8s 98s 87s AKo AQo AJo ATo A9o KQo KJo QJo";
-const HJ_3BET_9: &str = "AA KK QQ JJ TT AKs AQs AKo";
+const HJ_OPEN_9: &str = "AA KK QQ JJ TT 99 88 77 66 55 44 33 AKs AQs AJs ATs A9s A8s A7s A5s A4s A3s A2s KQs KJs KTs K9s K8s QJs QTs Q9s JTs J9s T9s T8s 98s 87s 76s A9o+ KQo KJo QJo";
+const HJ_3BET_9: &str = "AA KK QQ JJ TT AKs AQs A5s A4s AKo";
 
-const CO_OPEN_9: &str = "AA KK QQ JJ TT 99 88 77 66 55 44 33 22 AKs AQs AJs ATs A9s A8s A7s A6s A5s A4s A3s A2s KQs KJs KTs K9s K8s K7s K6s K5s QJs QTs Q9s Q8s JTs J9s J8s T9s T8s 98s 87s 76s 65s AKo AQo AJo ATo A9o A8o KQo KJo KTo QJo QTo JTo";
-const CO_3BET_9: &str = "AA KK QQ JJ TT AKs AQs AJs AKo AQo";
+const CO_OPEN_9: &str = "AA KK QQ JJ TT 99 88 77 66 55 44 33 22 AKs AQs AJs ATs A9s A8s A7s A6s A5s A4s A3s A2s KQs KJs KTs K9s K8s K7s K6s QJs QTs Q9s Q8s JTs J9s J8s T9s T8s 98s 97s 87s 76s 65s 54s A8o+ KQo KJo KTo QJo QTo JTo";
+const CO_3BET_9: &str = "AA KK QQ JJ TT AKs AQs AJs A5s A4s A3s AKo AQo";
 
-const BTN_OPEN_9: &str = "AA KK QQ JJ TT 99 88 77 66 55 44 33 22 AKs AQs AJs ATs A9s A8s A7s A6s A5s A4s A3s A2s KQs KJs KTs K9s K8s K7s K6s K5s K4s K3s K2s QJs QTs Q9s Q8s Q7s Q6s JTs J9s J8s J7s T9s T8s T7s 98s 97s 87s 86s 76s 75s 65s 64s 54s 53s 43s AKo AQo AJo ATo A9o A8o A7o A6o A5o A4o A3o A2o KQo KJo KTo K9o QJo QTo Q9o JTo J9o T9o 98o 87o";
-const BTN_3BET_9: &str = "AA KK QQ JJ TT 99 AKs AQs AJs ATs A5s AKo AQo";
+const BTN_OPEN_9: &str = "AA KK QQ JJ TT 99 88 77 66 55 44 33 22 AKs AQs AJs ATs A9s A8s A7s A6s A5s A4s A3s A2s KQs KJs KTs K9s K8s K7s K6s K5s K4s K3s K2s QJs QTs Q9s Q8s Q7s Q6s JTs J9s J8s J7s T9s T8s T7s 98s 97s 87s 86s 76s 75s 65s 64s 54s 53s 43s AKo AQo AJo ATo A9o A8o A7o A5o A4o A3o A2o KQo KJo KTo K9o QJo QTo Q9o JTo J9o T9o 98o 87o";
+const BTN_3BET_9: &str = "AA KK QQ JJ TT 99 AKs AQs AJs ATs A5s A4s A3s A2s AKo AQo";
 
-const SB_OPEN_9: &str = "AA KK QQ JJ TT 99 88 77 66 55 44 33 22 AKs AQs AJs ATs A9s A8s A7s A6s A5s A4s A3s A2s KQs KJs KTs K9s K8s K7s K6s K5s K4s QJs QTs Q9s Q8s Q7s JTs J9s J8s T9s T8s 98s 97s 87s 76s 65s 54s AKo AQo AJo ATo A9o A8o A7o A5o A4o KQo KJo KTo K9o QJo QTo JTo";
-const SB_3BET_9: &str = "AA KK QQ JJ TT 99 AKs AQs AJs A5s AKo AQo";
+const SB_OPEN_9: &str = "AA KK QQ JJ TT 99 88 77 66 55 44 33 22 AKs AQs AJs ATs A9s A8s A7s A6s A5s A4s A3s A2s KQs KJs KTs K9s K8s K7s K6s K5s QJs QTs Q9s Q8s JTs J9s J8s T9s T8s 98s 87s 76s 65s 54s AKo AQo AJo ATo A9o A8o A5o KQo KJo KTo QJo QTo JTo";
+const SB_3BET_9: &str = "AA KK QQ JJ TT 99 AKs AQs AJs A5s A4s A3s A2s AKo AQo";
 
-// 6-max ranges are wider — use BTN-like ranges shifted earlier
-const UTG_OPEN_6: &str = "AA KK QQ JJ TT 99 88 77 66 55 AKs AQs AJs ATs A9s A8s A5s A4s A3s KQs KJs KTs K9s QJs QTs Q9s JTs J9s T9s 98s AKo AQo AJo ATo KQo";
-const UTG_3BET_6: &str = "AA KK QQ JJ AKs AKo";
+// --- 6-max ranges ---
+// 6-max UTG has 5 players behind, similar to 9-max MP.
+// Positions from HJ onward are the same as 9-max equivalents.
 
-const HJ_OPEN_6: &str = "AA KK QQ JJ TT 99 88 77 66 55 44 33 AKs AQs AJs ATs A9s A8s A7s A6s A5s A4s A3s A2s KQs KJs KTs K9s K8s K7s QJs QTs Q9s Q8s JTs J9s J8s T9s T8s 98s 87s 76s AKo AQo AJo ATo A9o KQo KJo KTo QJo";
-const HJ_3BET_6: &str = "AA KK QQ JJ TT AKs AQs AKo";
+const UTG_OPEN_6: &str = "AA KK QQ JJ TT 99 88 77 66 55 44 AKs AQs AJs ATs A9s A8s A5s KQs KJs KTs K9s QJs QTs J9s T9s 98s 87s AKo AQo AJo ATo KQo";
+const UTG_3BET_6: &str = "AA KK QQ JJ AKs A5s AKo";
 
+const HJ_OPEN_6: &str = HJ_OPEN_9;
+const HJ_3BET_6: &str = HJ_3BET_9;
 const CO_OPEN_6: &str = CO_OPEN_9;
 const CO_3BET_6: &str = CO_3BET_9;
 const BTN_OPEN_6: &str = BTN_OPEN_9;
@@ -322,10 +345,40 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_range_plus_suffix() {
+        // A9o+ should expand to A9o, ATo, AJo, AQo, AKo
+        let range = parse_range("A9o+");
+        assert!(range.contains(&(14, 9, false)));  // A9o
+        assert!(range.contains(&(14, 10, false))); // ATo
+        assert!(range.contains(&(14, 11, false))); // AJo
+        assert!(range.contains(&(14, 12, false))); // AQo
+        assert!(range.contains(&(14, 13, false))); // AKo
+        assert!(!range.contains(&(14, 8, false))); // A8o not included
+        assert!(!range.contains(&(14, 9, true)));  // A9s not included
+
+        // A5s+ should expand suited hands
+        let range2 = parse_range("A5s+");
+        assert!(range2.contains(&(14, 5, true)));  // A5s
+        assert!(range2.contains(&(14, 9, true)));  // A9s
+        assert!(range2.contains(&(14, 13, true))); // AKs
+        assert!(!range2.contains(&(14, 4, true))); // A4s not included
+    }
+
+    #[test]
     fn test_6max_wider_utg() {
-        // Suited connectors like T9s should be open from UTG in 6-max
+        // T9s should be open from UTG in 6-max
         let hand = make_hole("Th", "9h");
         assert_eq!(recommend(&hand, Position::UTG, 6, Action::FirstIn), Recommendation::Open);
+    }
+
+    #[test]
+    fn test_polarized_3bet() {
+        // A5s should be a 3-bet bluff from MP+ in 9-max (polarized range)
+        let a5s = make_hole("Ah", "5h");
+        assert_eq!(recommend(&a5s, Position::MP, 9, Action::FirstIn), Recommendation::ThreeBet);
+        // But A6s from MP should just be open (not in 3-bet range)
+        let a6s = make_hole("Ah", "6h");
+        assert_eq!(recommend(&a6s, Position::MP, 9, Action::FirstIn), Recommendation::Fold);
     }
 
     #[test]

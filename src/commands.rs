@@ -24,6 +24,7 @@ pub fn execute(state: &mut HandState, input: &str) -> Result<Option<String>, Pok
         "first" | "firstin" => cmd_action(state, Action::FirstIn),
         "players" => cmd_players(state, args),
         "pos" => cmd_pos(state, args),
+        "ranges" => cmd_ranges(),
         "help" => cmd_help(),
         "quit" | "exit" => std::process::exit(0),
         _ => Ok(Some(format!(
@@ -230,6 +231,37 @@ fn cmd_pos(state: &mut HandState, args: &[&str]) -> Result<Option<String>, Poker
     Ok(Some(output))
 }
 
+fn cmd_ranges() -> Result<Option<String>, PokerError> {
+    let info = "\
+About These Ranges
+==================
+
+Source: Based on Upswing Poker simplified GTO charts, tightened for
+micro-stakes rake. 100bb stack depth, NL cash games.
+
+How they work:
+  RAISE     You're first in or facing a limp — raise to enter the pot.
+  FOLD      This hand isn't profitable from this position.
+  3-BET     Re-raise. Your hand is strong enough to put in a 3rd bet,
+            or it's a good bluff candidate (like A5s — it blocks AA/AK
+            and has decent equity if called).
+  CALL      Facing a raise, your hand is good enough to see a flop
+            but not strong enough to re-raise.
+
+Caveats:
+  - These are simplified. Real solvers use mixed strategies (e.g. open
+    A9o from UTG 35% of the time). This tool says raise or fold.
+  - 3-bet ranges here are polarized: premium hands for value + low
+    suited aces (A5s-A2s) as bluffs. At micros, lean toward value
+    since opponents call too much.
+  - Facing a raise, the right play depends on WHO raised and from
+    where. This tool gives a rough guide based on your position only.
+  - At micros, players are generally too loose. You can often play
+    tighter than these charts and still do well.";
+
+    Ok(Some(info.to_string()))
+}
+
 fn cmd_help() -> Result<Option<String>, PokerError> {
     let help = "\
 Poker CLI — Preflop Study Tool
@@ -242,6 +274,7 @@ Commands:
   new                           Advance position and reset for next hand
   players <2-9>                 Set number of players at the table
   pos <position>                Set your current position
+  ranges                        Info about the ranges and how they work
   help                          Show this help
   quit / exit                   Exit the program
 
