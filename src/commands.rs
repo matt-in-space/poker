@@ -2,8 +2,11 @@ use colored::Colorize;
 
 use crate::card::Card;
 use crate::error::PokerError;
-use crate::hand_state::{Action, HandState};
+use crate::eval;
+use crate::hand_state::{Action, HandState, Street};
+use crate::outs;
 use crate::position::{self, Position};
+use crate::pot::PotOdds;
 use crate::preflop::{self, HoleCardType};
 use crate::table_display;
 
@@ -16,9 +19,42 @@ pub fn execute(state: &mut HandState, input: &str) -> Result<Option<String>, Pok
     let cmd = parts[0].to_lowercase();
     let args = &parts[1..];
 
+    // Check for compact shortcuts: d=deal, f=flop, t=turn, r=river, b=odds
+    if cmd.len() > 1 {
+        if let Some(rest) = cmd.strip_prefix('d') {
+            if cmd != "deal" {
+                return parse_compact_deal(state, rest);
+            }
+        }
+        if let Some(rest) = cmd.strip_prefix('f') {
+            if cmd != "first" && cmd != "firstin" && cmd != "flop" {
+                return parse_compact_flop(state, rest);
+            }
+        }
+        if let Some(rest) = cmd.strip_prefix('t') {
+            if cmd != "turn" {
+                return parse_compact_single_card(state, rest, Street::Turn);
+            }
+        }
+        if let Some(rest) = cmd.strip_prefix('r') {
+            if cmd != "raise" && cmd != "ranges" && cmd != "river" {
+                return parse_compact_single_card(state, rest, Street::River);
+            }
+        }
+        if let Some(rest) = cmd.strip_prefix('b') {
+            if !rest.is_empty() {
+                return parse_compact_odds(state, rest);
+            }
+        }
+    }
+
     match cmd.as_str() {
-        "new" => cmd_new(state),
+        "n" | "new" => cmd_new(state),
         "deal" => cmd_deal(state, args),
+        "flop" => cmd_flop(state, args),
+        "turn" => cmd_turn(state, args),
+        "river" => cmd_river(state, args),
+        "odds" => cmd_odds(state, args),
         "limp" => cmd_action(state, Action::FacingLimp),
         "raise" => cmd_action(state, Action::FacingRaise),
         "first" | "firstin" => cmd_action(state, Action::FirstIn),
@@ -32,6 +68,140 @@ pub fn execute(state: &mut HandState, input: &str) -> Result<Option<String>, Pok
         ))),
     }
 }
+
+// --- Compact shortcut parsers ---
+
+/// Split a string into cards by finding suit characters (s, h, d, c).
+fn find_suit_positions(chars: &[char]) -> Vec<usize> {
+    let mut positions: Vec<usize> = chars
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| matches!(c, 's' | 'h' | 'c'))
+        .map(|(i, _)| i)
+        .collect();
+
+    // 'd' is both a suit (diamonds) and command prefix — only count if after a rank char
+    for (i, &c) in chars.iter().enumerate() {
+        if c == 'd' && i > 0 {
+            positions.push(i);
+        }
+    }
+    positions.sort();
+    positions
+}
+
+/// Parse compact deal: "2h8s", "ThKs", "AhKsr" (trailing r=raise, l=limp)
+fn parse_compact_deal(state: &mut HandState, input: &str) -> Result<Option<String>, PokerError> {
+    let lower = input.to_lowercase();
+    let chars: Vec<char> = lower.chars().collect();
+    let suits = find_suit_positions(&chars);
+
+    if suits.len() < 2 {
+        return Err(PokerError::WrongArgCount {
+            command: "d",
+            usage: "<card1><card2> — e.g. d2h8s, dThKc",
+        });
+    }
+
+    let card1_str: String = chars[..=suits[0]].iter().collect();
+    let card2_str: String = chars[suits[0] + 1..=suits[1]].iter().collect();
+    let remainder: String = chars[suits[1] + 1..].iter().collect();
+
+    let card1 = Card::parse(&card1_str)?;
+    let card2 = Card::parse(&card2_str)?;
+
+    if card1 == card2 {
+        return Err(PokerError::DuplicateCard(card1));
+    }
+
+    let action = match remainder.as_str() {
+        "l" | "limp" => Action::FacingLimp,
+        "r" | "raise" => Action::FacingRaise,
+        "" => Action::FirstIn,
+        _ => {
+            return Err(PokerError::WrongArgCount {
+                command: "d",
+                usage: "<card1><card2>[l|r] — e.g. d2h8s, dThKcr",
+            });
+        }
+    };
+
+    if !state.configured {
+        return Err(PokerError::NotConfigured);
+    }
+
+    state.hole_cards = Some([card1, card2]);
+    state.action = action;
+
+    Ok(Some(format_recommendation(state)))
+}
+
+/// Parse compact flop: "2h3s4c"
+fn parse_compact_flop(state: &mut HandState, input: &str) -> Result<Option<String>, PokerError> {
+    let lower = input.to_lowercase();
+    let chars: Vec<char> = lower.chars().collect();
+    let suits = find_suit_positions(&chars);
+
+    if suits.len() < 3 {
+        return Err(PokerError::WrongArgCount {
+            command: "f",
+            usage: "<c1><c2><c3> — e.g. f2h3s4c",
+        });
+    }
+
+    let c1_str: String = chars[..=suits[0]].iter().collect();
+    let c2_str: String = chars[suits[0] + 1..=suits[1]].iter().collect();
+    let c3_str: String = chars[suits[1] + 1..=suits[2]].iter().collect();
+
+    let cards = [
+        Card::parse(&c1_str)?,
+        Card::parse(&c2_str)?,
+        Card::parse(&c3_str)?,
+    ];
+
+    do_flop(state, &cards)
+}
+
+/// Parse compact single card for turn/river: "5d", "Kh"
+fn parse_compact_single_card(
+    state: &mut HandState,
+    input: &str,
+    next_street: Street,
+) -> Result<Option<String>, PokerError> {
+    let card = Card::parse(input)?;
+
+    match next_street {
+        Street::Turn => do_turn(state, card),
+        Street::River => do_river(state, card),
+        _ => unreachable!(),
+    }
+}
+
+/// Parse compact odds: "25p50" → bet=25, pot=50
+fn parse_compact_odds(state: &mut HandState, input: &str) -> Result<Option<String>, PokerError> {
+    let lower = input.to_lowercase();
+    let parts: Vec<&str> = lower.split('p').collect();
+
+    if parts.len() != 2 {
+        return Err(PokerError::WrongArgCount {
+            command: "b",
+            usage: "<bet>p<pot> — e.g. b25p50",
+        });
+    }
+
+    let bet: u64 = parts[0].parse().map_err(|_| PokerError::WrongArgCount {
+        command: "b",
+        usage: "<bet>p<pot> — e.g. b25p50",
+    })?;
+    let pot: u64 = parts[1].parse().map_err(|_| PokerError::WrongArgCount {
+        command: "b",
+        usage: "<bet>p<pot> — e.g. b25p50",
+    })?;
+
+    do_odds(state, bet, pot)
+}
+
+// --- Command implementations ---
 
 fn cmd_new(state: &mut HandState) -> Result<Option<String>, PokerError> {
     state.reset();
@@ -82,6 +252,213 @@ fn cmd_deal(state: &mut HandState, args: &[&str]) -> Result<Option<String>, Poke
     state.action = action;
 
     Ok(Some(format_recommendation(state)))
+}
+
+fn cmd_flop(state: &mut HandState, args: &[&str]) -> Result<Option<String>, PokerError> {
+    if args.len() != 3 {
+        return Err(PokerError::WrongArgCount {
+            command: "flop",
+            usage: "<card1> <card2> <card3>",
+        });
+    }
+
+    let cards = [
+        Card::parse(args[0])?,
+        Card::parse(args[1])?,
+        Card::parse(args[2])?,
+    ];
+
+    do_flop(state, &cards)
+}
+
+fn cmd_turn(state: &mut HandState, args: &[&str]) -> Result<Option<String>, PokerError> {
+    if args.len() != 1 {
+        return Err(PokerError::WrongArgCount {
+            command: "turn",
+            usage: "<card>",
+        });
+    }
+    let card = Card::parse(args[0])?;
+    do_turn(state, card)
+}
+
+fn cmd_river(state: &mut HandState, args: &[&str]) -> Result<Option<String>, PokerError> {
+    if args.len() != 1 {
+        return Err(PokerError::WrongArgCount {
+            command: "river",
+            usage: "<card>",
+        });
+    }
+    let card = Card::parse(args[0])?;
+    do_river(state, card)
+}
+
+fn cmd_odds(state: &mut HandState, args: &[&str]) -> Result<Option<String>, PokerError> {
+    if args.len() != 2 {
+        return Err(PokerError::WrongArgCount {
+            command: "odds",
+            usage: "<bet> <pot>",
+        });
+    }
+
+    let bet: u64 = args[0].parse().map_err(|_| PokerError::WrongArgCount {
+        command: "odds",
+        usage: "<bet> <pot>",
+    })?;
+    let pot: u64 = args[1].parse().map_err(|_| PokerError::WrongArgCount {
+        command: "odds",
+        usage: "<bet> <pot>",
+    })?;
+
+    do_odds(state, bet, pot)
+}
+
+// --- Shared logic ---
+
+fn do_flop(state: &mut HandState, cards: &[Card; 3]) -> Result<Option<String>, PokerError> {
+    if state.hole_cards.is_none() {
+        return Err(PokerError::NoDeal);
+    }
+    if state.street != Street::Preflop {
+        return Err(PokerError::WrongStreet {
+            expected: "Flop already set — use 'turn' or 't' for the next card",
+        });
+    }
+
+    state.check_duplicates(cards)?;
+    state.board.extend_from_slice(cards);
+    state.street = Street::Flop;
+
+    Ok(Some(format_board_analysis(state)))
+}
+
+fn do_turn(state: &mut HandState, card: Card) -> Result<Option<String>, PokerError> {
+    if state.hole_cards.is_none() {
+        return Err(PokerError::NoDeal);
+    }
+    if state.street != Street::Flop {
+        return Err(PokerError::WrongStreet {
+            expected: "Use 'flop' or 'f' first",
+        });
+    }
+
+    state.check_not_duplicate(card)?;
+    state.board.push(card);
+    state.street = Street::Turn;
+
+    Ok(Some(format_board_analysis(state)))
+}
+
+fn do_river(state: &mut HandState, card: Card) -> Result<Option<String>, PokerError> {
+    if state.hole_cards.is_none() {
+        return Err(PokerError::NoDeal);
+    }
+    if state.street != Street::Turn {
+        return Err(PokerError::WrongStreet {
+            expected: "Use 'turn' or 't' first",
+        });
+    }
+
+    state.check_not_duplicate(card)?;
+    state.board.push(card);
+    state.street = Street::River;
+
+    let hole = state.hole_cards.unwrap();
+    let made = eval::evaluate(&hole, &state.board);
+
+    let board_str = state
+        .board
+        .iter()
+        .map(|c| c.to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    Ok(Some(format!(
+        "Board: {board_str}\nFinal hand: {}",
+        made.to_string().green().bold()
+    )))
+}
+
+fn do_odds(state: &HandState, bet: u64, pot: u64) -> Result<Option<String>, PokerError> {
+    let odds = PotOdds::calculate(pot, bet);
+    let mut output = format!(
+        "Pot odds: call ${bet} into ${pot} pot → need {:.1}% equity",
+        odds.required_equity
+    );
+
+    // Compare against current equity if we have a board
+    if let Some(hole) = &state.hole_cards {
+        if !state.board.is_empty() && state.street != Street::River {
+            let analysis = outs::analyze_outs(hole, &state.board, state.street);
+            if analysis.total_outs > 0 {
+                let eq = analysis.equity_percent;
+                output.push_str(&format!(
+                    "\nYou have: ~{:.0}% equity ({} outs)",
+                    eq, analysis.total_outs
+                ));
+                if eq >= odds.required_equity {
+                    output.push_str(&format!(
+                        "\nVerdict: {}",
+                        "CALL — profitable".green().bold()
+                    ));
+                } else {
+                    output.push_str(&format!("\nVerdict: {}", "FOLD — not enough equity".red()));
+                }
+            }
+        }
+    }
+
+    Ok(Some(output))
+}
+
+fn format_board_analysis(state: &HandState) -> String {
+    let hole = state.hole_cards.unwrap();
+    let board_str = state
+        .board
+        .iter()
+        .map(|c| c.to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let made = eval::evaluate(&hole, &state.board);
+    let analysis = outs::analyze_outs(&hole, &state.board, state.street);
+
+    let rule = if state.street == Street::Flop {
+        "rule of 4"
+    } else {
+        "rule of 2"
+    };
+
+    let mut output = format!(
+        "Board: {board_str}\nMade hand: {}\n",
+        made.to_string().bold()
+    );
+
+    if analysis.draws.is_empty() {
+        output.push_str("No draws.\n");
+    } else {
+        output.push('\n');
+        for draw in &analysis.draws {
+            let outs_str = draw
+                .outs
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join(" ");
+            output.push_str(&format!(
+                "  {} ({} outs): {}\n",
+                draw.draw_type,
+                draw.outs.len(),
+                outs_str
+            ));
+        }
+        output.push_str(&format!(
+            "\nTotal: {} outs (~{:.0}% equity, {})\n",
+            analysis.total_outs, analysis.equity_percent, rule
+        ));
+    }
+
+    output
 }
 
 fn cmd_action(state: &mut HandState, action: Action) -> Result<Option<String>, PokerError> {
@@ -266,17 +643,21 @@ fn cmd_help() -> Result<Option<String>, PokerError> {
     let help = "\
 Poker CLI — Preflop Study Tool
 
-Commands:
-  deal <c1> <c2> [limp|raise]   Deal hole cards, get preflop recommendation
-  limp                          Update to facing a limp (re-shows recommendation)
-  raise                         Update to facing a raise (re-shows recommendation)
-  first                         Reset to first-in (re-shows recommendation)
-  new                           Advance position and reset for next hand
-  players <2-9>                 Set number of players at the table
-  pos <position>                Set your current position
-  ranges                        Info about the ranges and how they work
-  help                          Show this help
-  quit / exit                   Exit the program
+Commands:                                Shortcuts:
+  deal <c1> <c2> [limp|raise]              d<c1><c2>[l|r]  e.g. d2h8s, dThKcr
+  flop <c1> <c2> <c3>                      f<c1><c2><c3>   e.g. f2h3s4c
+  turn <card>                              t<card>         e.g. t5d
+  river <card>                             r<card>         e.g. r6h
+  new                                      n
+  odds <bet> <pot>                         b<bet>p<pot>    e.g. b25p50
+  limp                 Facing a limp (re-shows recommendation)
+  raise                Facing a raise (re-shows recommendation)
+  first                Reset to first-in (re-shows recommendation)
+  players <2-9>        Set number of players at the table
+  pos <position>       Set your current position
+  ranges               Info about the ranges and how they work
+  help                 Show this help
+  quit / exit          Exit the program
 
 Card notation: rank + suit (e.g. As, Td, 2c, KH)
   Ranks: 2 3 4 5 6 7 8 9 T J Q K A  (10 also accepted for T)

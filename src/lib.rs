@@ -1,7 +1,10 @@
 pub mod card;
 pub mod commands;
 pub mod error;
+pub mod eval;
 pub mod hand_state;
+pub mod outs;
 pub mod position;
+pub mod pot;
 pub mod preflop;
 pub mod table_display;

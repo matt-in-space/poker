@@ -5,8 +5,11 @@ use rustyline::DefaultEditor;
 mod card;
 mod commands;
 mod error;
+mod eval;
 mod hand_state;
+mod outs;
 mod position;
+mod pot;
 mod preflop;
 mod table_display;
 
@@ -94,7 +97,11 @@ fn main() {
             .position()
             .map(|p| p.short_name().to_string())
             .unwrap_or_else(|| "?".to_string());
-        let prompt = format!("{pos_name}> ");
+        let prompt = if state.street != hand_state::Street::Preflop {
+            format!("{pos_name} {street}> ", street = state.street)
+        } else {
+            format!("{pos_name}> ")
+        };
 
         match rl.readline(&prompt) {
             Ok(line) => {

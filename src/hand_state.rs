@@ -1,5 +1,7 @@
 use crate::card::Card;
+use crate::error::PokerError;
 use crate::position::{self, Position};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -8,12 +10,33 @@ pub enum Action {
     FacingRaise,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Street {
+    Preflop,
+    Flop,
+    Turn,
+    River,
+}
+
+impl std::fmt::Display for Street {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Street::Preflop => write!(f, "preflop"),
+            Street::Flop => write!(f, "flop"),
+            Street::Turn => write!(f, "turn"),
+            Street::River => write!(f, "river"),
+        }
+    }
+}
+
 pub struct HandState {
     pub hole_cards: Option<[Card; 2]>,
     pub num_players: u8,
     pub position_index: usize,
     pub configured: bool,
     pub action: Action,
+    pub board: Vec<Card>,
+    pub street: Street,
 }
 
 impl HandState {
@@ -24,12 +47,16 @@ impl HandState {
             position_index: 0,
             configured: false,
             action: Action::FirstIn,
+            board: Vec::new(),
+            street: Street::Preflop,
         }
     }
 
     pub fn reset(&mut self) {
         self.hole_cards = None;
         self.action = Action::FirstIn;
+        self.board.clear();
+        self.street = Street::Preflop;
     }
 
     pub fn position(&self) -> Option<Position> {
@@ -54,5 +81,36 @@ impl HandState {
         } else {
             false
         }
+    }
+
+    pub fn cards_in_play(&self) -> HashSet<Card> {
+        let mut set = HashSet::new();
+        if let Some(hole) = &self.hole_cards {
+            set.insert(hole[0]);
+            set.insert(hole[1]);
+        }
+        for &c in &self.board {
+            set.insert(c);
+        }
+        set
+    }
+
+    pub fn check_not_duplicate(&self, card: Card) -> Result<(), PokerError> {
+        if self.cards_in_play().contains(&card) {
+            Err(PokerError::DuplicateCard(card))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn check_duplicates(&self, cards: &[Card]) -> Result<(), PokerError> {
+        let in_play = self.cards_in_play();
+        let mut seen = HashSet::new();
+        for &card in cards {
+            if in_play.contains(&card) || !seen.insert(card) {
+                return Err(PokerError::DuplicateCard(card));
+            }
+        }
+        Ok(())
     }
 }

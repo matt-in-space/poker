@@ -12,6 +12,8 @@ pub enum PokerError {
         usage: &'static str,
     },
     NotConfigured,
+    NoDeal,
+    WrongStreet { expected: &'static str },
 }
 
 impl fmt::Display for PokerError {
@@ -34,6 +36,12 @@ impl fmt::Display for PokerError {
             }
             PokerError::NotConfigured => {
                 write!(f, "Not configured yet — use 'players' and 'pos' first")
+            }
+            PokerError::NoDeal => {
+                write!(f, "No hand in progress — use 'deal' first")
+            }
+            PokerError::WrongStreet { expected } => {
+                write!(f, "{expected}")
             }
         }
     }
