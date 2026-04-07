@@ -84,9 +84,38 @@ fn main() {
         }
     }
 
+    // Ask for big blind (optional)
+    loop {
+        match rl.readline("Big blind amount? (enter to skip): ") {
+            Ok(line) => {
+                let line = line.trim().to_string();
+                if line.is_empty() {
+                    break;
+                }
+                if let Ok(bb) = line.parse::<u64>() {
+                    if bb > 0 {
+                        state.big_blind = Some(bb);
+                        break;
+                    }
+                }
+                println!("Enter a positive number, or press enter to skip.");
+            }
+            Err(ReadlineError::Interrupted) => continue,
+            Err(ReadlineError::Eof) => return,
+            Err(err) => {
+                eprintln!("Error: {err}");
+                return;
+            }
+        }
+    }
+
     let pos = state.position().unwrap();
+    let blinds_msg = match state.big_blind {
+        Some(bb) => format!(", BB {bb}"),
+        None => String::new(),
+    };
     println!(
-        "\nReady! You're on the {} ({} players). Type 'deal <c1> <c2>' to start.\n",
+        "\nReady! You're on the {} ({} players{blinds_msg}). Type 'deal <c1> <c2>' to start.\n",
         pos.short_name().bold(),
         state.num_players
     );
