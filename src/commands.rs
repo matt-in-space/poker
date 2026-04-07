@@ -42,7 +42,7 @@ pub fn execute(state: &mut HandState, input: &str) -> Result<Option<String>, Pok
             }
         }
         if let Some(rest) = cmd.strip_prefix('b') {
-            if !rest.is_empty() {
+            if !rest.is_empty() && cmd != "blinds" {
                 return parse_compact_odds(state, rest);
             }
         }
