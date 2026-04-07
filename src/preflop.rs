@@ -214,11 +214,18 @@ const BTN_3BET_6: &str = BTN_3BET_9;
 const SB_OPEN_6: &str = SB_OPEN_9;
 const SB_3BET_6: &str = SB_3BET_9;
 
+// Premium-only range for facing very large raises (>15x BB).
+const PREMIUM_RANGE: &str = "AA KK QQ AKs";
+
+// Tighter range for facing large raises (5-15x BB).
+const LARGE_RAISE_3BET: &str = "AA KK";
+
 pub fn recommend(
     hole: &HoleCardType,
     position: Position,
     num_players: u8,
     action: crate::hand_state::Action,
+    raise_bb: Option<f64>,
 ) -> Recommendation {
     use crate::hand_state::Action;
 
@@ -256,12 +263,37 @@ pub fn recommend(
             }
         }
         Action::FacingRaise => {
-            if in_3bet {
-                Recommendation::ThreeBet
-            } else if in_open {
-                Recommendation::Call
-            } else {
-                Recommendation::Fold
+            match raise_bb {
+                // Huge raise (>15x BB): only play premiums
+                Some(bb_mult) if bb_mult > 15.0 => {
+                    let premium = parse_range(PREMIUM_RANGE);
+                    if premium.contains(&key) {
+                        Recommendation::Call
+                    } else {
+                        Recommendation::Fold
+                    }
+                }
+                // Large raise (5-15x BB): call with 3-bet hands, re-raise only AA/KK
+                Some(bb_mult) if bb_mult > 5.0 => {
+                    let top = parse_range(LARGE_RAISE_3BET);
+                    if top.contains(&key) {
+                        Recommendation::ThreeBet
+                    } else if in_3bet {
+                        Recommendation::Call
+                    } else {
+                        Recommendation::Fold
+                    }
+                }
+                // Normal raise: standard ranges
+                _ => {
+                    if in_3bet {
+                        Recommendation::ThreeBet
+                    } else if in_open {
+                        Recommendation::Call
+                    } else {
+                        Recommendation::Fold
+                    }
+                }
             }
         }
     }
@@ -325,21 +357,21 @@ mod tests {
     #[test]
     fn test_premium_utg() {
         let aa = make_hole("Ah", "Ad");
-        assert_eq!(recommend(&aa, Position::UTG, 9, Action::FirstIn), Recommendation::ThreeBet);
+        assert_eq!(recommend(&aa, Position::UTG, 9, Action::FirstIn, None), Recommendation::ThreeBet);
     }
 
     #[test]
     fn test_trash_utg() {
         let hand = make_hole("7h", "2d");
-        assert_eq!(recommend(&hand, Position::UTG, 9, Action::FirstIn), Recommendation::Fold);
+        assert_eq!(recommend(&hand, Position::UTG, 9, Action::FirstIn, None), Recommendation::Fold);
     }
 
     #[test]
     fn test_btn_wider() {
         // 87s should be open from BTN but fold from UTG
         let hand = make_hole("8h", "7h");
-        assert_eq!(recommend(&hand, Position::BTN, 9, Action::FirstIn), Recommendation::Open);
-        assert_eq!(recommend(&hand, Position::UTG, 9, Action::FirstIn), Recommendation::Fold);
+        assert_eq!(recommend(&hand, Position::BTN, 9, Action::FirstIn, None), Recommendation::Open);
+        assert_eq!(recommend(&hand, Position::UTG, 9, Action::FirstIn, None), Recommendation::Fold);
     }
 
     #[test]
@@ -375,63 +407,101 @@ mod tests {
     fn test_6max_wider_utg() {
         // T9s should be open from UTG in 6-max
         let hand = make_hole("Th", "9h");
-        assert_eq!(recommend(&hand, Position::UTG, 6, Action::FirstIn), Recommendation::Open);
+        assert_eq!(recommend(&hand, Position::UTG, 6, Action::FirstIn, None), Recommendation::Open);
     }
 
     #[test]
     fn test_polarized_3bet() {
         // A5s should be a 3-bet bluff from MP+ in 9-max (polarized range)
         let a5s = make_hole("Ah", "5h");
-        assert_eq!(recommend(&a5s, Position::MP, 9, Action::FirstIn), Recommendation::ThreeBet);
+        assert_eq!(recommend(&a5s, Position::MP, 9, Action::FirstIn, None), Recommendation::ThreeBet);
         // But A6s from MP should just be open (not in 3-bet range)
         let a6s = make_hole("Ah", "6h");
-        assert_eq!(recommend(&a6s, Position::MP, 9, Action::FirstIn), Recommendation::Fold);
+        assert_eq!(recommend(&a6s, Position::MP, 9, Action::FirstIn, None), Recommendation::Fold);
     }
 
     #[test]
     fn test_facing_limp() {
         // An open-range hand facing a limp should be ISO-RAISE
         let hand = make_hole("Ah", "Js");
-        assert_eq!(recommend(&hand, Position::CO, 9, Action::FacingLimp), Recommendation::IsoRaise);
+        assert_eq!(recommend(&hand, Position::CO, 9, Action::FacingLimp, None), Recommendation::IsoRaise);
         // Trash facing a limp is still fold
         let trash = make_hole("7h", "2d");
-        assert_eq!(recommend(&trash, Position::CO, 9, Action::FacingLimp), Recommendation::Fold);
+        assert_eq!(recommend(&trash, Position::CO, 9, Action::FacingLimp, None), Recommendation::Fold);
     }
 
     #[test]
     fn test_facing_raise() {
         // A 3-bet hand facing a raise should still 3-bet
         let aa = make_hole("Ah", "Ad");
-        assert_eq!(recommend(&aa, Position::CO, 9, Action::FacingRaise), Recommendation::ThreeBet);
+        assert_eq!(recommend(&aa, Position::CO, 9, Action::FacingRaise, None), Recommendation::ThreeBet);
         // An open-range hand facing a raise should call
         let hand = make_hole("8h", "7h");
-        assert_eq!(recommend(&hand, Position::BTN, 9, Action::FacingRaise), Recommendation::Call);
+        assert_eq!(recommend(&hand, Position::BTN, 9, Action::FacingRaise, None), Recommendation::Call);
         // Trash facing a raise is fold
         let trash = make_hole("7h", "2d");
-        assert_eq!(recommend(&trash, Position::BTN, 9, Action::FacingRaise), Recommendation::Fold);
+        assert_eq!(recommend(&trash, Position::BTN, 9, Action::FacingRaise, None), Recommendation::Fold);
     }
 
     #[test]
     fn test_bb_check_first_in() {
         // BB with trash and no raise should check, not fold
         let trash = make_hole("7h", "2d");
-        assert_eq!(recommend(&trash, Position::BB, 9, Action::FirstIn), Recommendation::Check);
+        assert_eq!(recommend(&trash, Position::BB, 9, Action::FirstIn, None), Recommendation::Check);
         // BB with a good hand should still raise
         let good = make_hole("Ah", "Kh");
-        assert_ne!(recommend(&good, Position::BB, 9, Action::FirstIn), Recommendation::Check);
+        assert_ne!(recommend(&good, Position::BB, 9, Action::FirstIn, None), Recommendation::Check);
     }
 
     #[test]
     fn test_bb_check_facing_limp() {
         // BB with trash facing a limp should check, not fold
         let trash = make_hole("7h", "2d");
-        assert_eq!(recommend(&trash, Position::BB, 9, Action::FacingLimp), Recommendation::Check);
+        assert_eq!(recommend(&trash, Position::BB, 9, Action::FacingLimp, None), Recommendation::Check);
     }
 
     #[test]
     fn test_bb_fold_facing_raise() {
         // BB with trash facing a raise should still fold
         let trash = make_hole("7h", "2d");
-        assert_eq!(recommend(&trash, Position::BB, 9, Action::FacingRaise), Recommendation::Fold);
+        assert_eq!(recommend(&trash, Position::BB, 9, Action::FacingRaise, None), Recommendation::Fold);
+    }
+
+    #[test]
+    fn test_large_raise_tightens_range() {
+        // 87s is a call at normal sizing but should fold facing 10x BB
+        let hand = make_hole("8h", "7h");
+        assert_eq!(recommend(&hand, Position::BTN, 9, Action::FacingRaise, None), Recommendation::Call);
+        assert_eq!(recommend(&hand, Position::BTN, 9, Action::FacingRaise, Some(10.0)), Recommendation::Fold);
+
+        // AQs is in the 3-bet range at normal sizing, becomes a call at 10x BB
+        let aqs = make_hole("Ah", "Qh");
+        assert_eq!(recommend(&aqs, Position::BTN, 9, Action::FacingRaise, None), Recommendation::ThreeBet);
+        assert_eq!(recommend(&aqs, Position::BTN, 9, Action::FacingRaise, Some(10.0)), Recommendation::Call);
+
+        // AA still re-raises at 10x BB
+        let aa = make_hole("Ah", "Ad");
+        assert_eq!(recommend(&aa, Position::BTN, 9, Action::FacingRaise, Some(10.0)), Recommendation::ThreeBet);
+    }
+
+    #[test]
+    fn test_huge_raise_only_premiums() {
+        // At 33x BB, only AA/KK/QQ/AKs should play
+        let aa = make_hole("Ah", "Ad");
+        assert_eq!(recommend(&aa, Position::BTN, 9, Action::FacingRaise, Some(33.0)), Recommendation::Call);
+
+        let kk = make_hole("Kh", "Kd");
+        assert_eq!(recommend(&kk, Position::BTN, 9, Action::FacingRaise, Some(33.0)), Recommendation::Call);
+
+        let aks = make_hole("Ah", "Kh");
+        assert_eq!(recommend(&aks, Position::BTN, 9, Action::FacingRaise, Some(33.0)), Recommendation::Call);
+
+        // JJ should fold at 33x BB
+        let jj = make_hole("Jh", "Jd");
+        assert_eq!(recommend(&jj, Position::BTN, 9, Action::FacingRaise, Some(33.0)), Recommendation::Fold);
+
+        // 87s definitely folds
+        let hand = make_hole("8h", "7h");
+        assert_eq!(recommend(&hand, Position::BTN, 9, Action::FacingRaise, Some(33.0)), Recommendation::Fold);
     }
 }

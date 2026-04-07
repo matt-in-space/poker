@@ -624,7 +624,11 @@ pub fn format_recommendation(state: &HandState) -> String {
     let position = state.position().unwrap();
 
     let hole_type = HoleCardType::from_cards(card1, card2);
-    let rec = preflop::recommend(&hole_type, position, state.num_players, state.action);
+    let raise_bb = match (state.raise_amount, state.big_blind) {
+        (Some(raise), Some(bb)) if bb > 0 => Some(raise as f64 / bb as f64),
+        _ => None,
+    };
+    let rec = preflop::recommend(&hole_type, position, state.num_players, state.action, raise_bb);
 
     let (rec_colored, rec_desc) = match rec {
         preflop::Recommendation::Open => (
