@@ -37,6 +37,8 @@ pub struct HandState {
     pub action: Action,
     pub board: Vec<Card>,
     pub street: Street,
+    pub big_blind: Option<u64>,
+    pub raise_amount: Option<u64>,
 }
 
 impl HandState {
@@ -49,12 +51,15 @@ impl HandState {
             action: Action::FirstIn,
             board: Vec::new(),
             street: Street::Preflop,
+            big_blind: None,
+            raise_amount: None,
         }
     }
 
     pub fn reset(&mut self) {
         self.hole_cards = None;
         self.action = Action::FirstIn;
+        self.raise_amount = None;
         self.board.clear();
         self.street = Street::Preflop;
     }

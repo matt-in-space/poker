@@ -55,11 +55,12 @@ pub fn execute(state: &mut HandState, input: &str) -> Result<Option<String>, Pok
         "turn" => cmd_turn(state, args),
         "river" => cmd_river(state, args),
         "odds" => cmd_odds(state, args),
-        "limp" => cmd_action(state, Action::FacingLimp),
-        "raise" => cmd_action(state, Action::FacingRaise),
-        "first" | "firstin" => cmd_action(state, Action::FirstIn),
+        "limp" => cmd_action(state, Action::FacingLimp, &[]),
+        "raise" => cmd_action(state, Action::FacingRaise, args),
+        "first" | "firstin" => cmd_action(state, Action::FirstIn, &[]),
         "players" => cmd_players(state, args),
         "pos" => cmd_pos(state, args),
+        "blinds" => cmd_blinds(state, args),
         "ranges" => cmd_ranges(),
         "help" => cmd_help(),
         "quit" | "exit" => std::process::exit(0),
@@ -114,16 +115,27 @@ fn parse_compact_deal(state: &mut HandState, input: &str) -> Result<Option<Strin
         return Err(PokerError::DuplicateCard(card1));
     }
 
-    let action = match remainder.as_str() {
-        "l" | "limp" => Action::FacingLimp,
-        "r" | "raise" => Action::FacingRaise,
-        "" => Action::FirstIn,
-        _ => {
-            return Err(PokerError::WrongArgCount {
-                command: "d",
-                usage: "<card1><card2>[l|r] — e.g. d2h8s, dThKcr",
-            });
+    let (action, raise_amount) = if remainder.is_empty() {
+        (Action::FirstIn, None)
+    } else if remainder == "l" || remainder == "limp" {
+        (Action::FacingLimp, None)
+    } else if remainder == "r" || remainder == "raise" {
+        (Action::FacingRaise, None)
+    } else if let Some(amount_str) = remainder.strip_prefix('r') {
+        match amount_str.parse::<u64>() {
+            Ok(amt) if amt > 0 => (Action::FacingRaise, Some(amt)),
+            _ => {
+                return Err(PokerError::WrongArgCount {
+                    command: "d",
+                    usage: "<card1><card2>[l|r[amount]] — e.g. d2h8s, dThKcr, dAhKsr60",
+                });
+            }
         }
+    } else {
+        return Err(PokerError::WrongArgCount {
+            command: "d",
+            usage: "<card1><card2>[l|r[amount]] — e.g. d2h8s, dThKcr, dAhKsr60",
+        });
     };
 
     if !state.configured {
@@ -132,6 +144,7 @@ fn parse_compact_deal(state: &mut HandState, input: &str) -> Result<Option<Strin
 
     state.hole_cards = Some([card1, card2]);
     state.action = action;
+    state.raise_amount = raise_amount;
 
     Ok(Some(format_recommendation(state)))
 }
@@ -220,10 +233,10 @@ fn cmd_deal(state: &mut HandState, args: &[&str]) -> Result<Option<String>, Poke
         return Err(PokerError::NotConfigured);
     }
 
-    if args.len() < 2 || args.len() > 3 {
+    if args.len() < 2 || args.len() > 4 {
         return Err(PokerError::WrongArgCount {
             command: "deal",
-            usage: "<card1> <card2> [limp|raise]",
+            usage: "<card1> <card2> [limp|raise [amount]]",
         });
     }
 
@@ -234,23 +247,27 @@ fn cmd_deal(state: &mut HandState, args: &[&str]) -> Result<Option<String>, Poke
         return Err(PokerError::DuplicateCard(card1));
     }
 
-    let action = if let Some(action_str) = args.get(2) {
+    let (action, raise_amount) = if let Some(action_str) = args.get(2) {
         match action_str.to_lowercase().as_str() {
-            "limp" => Action::FacingLimp,
-            "raise" => Action::FacingRaise,
+            "limp" => (Action::FacingLimp, None),
+            "raise" => {
+                let amt = args.get(3).and_then(|s| s.parse::<u64>().ok());
+                (Action::FacingRaise, amt)
+            }
             _ => {
                 return Err(PokerError::WrongArgCount {
                     command: "deal",
-                    usage: "<card1> <card2> [limp|raise]",
+                    usage: "<card1> <card2> [limp|raise [amount]]",
                 });
             }
         }
     } else {
-        Action::FirstIn
+        (Action::FirstIn, None)
     };
 
     state.hole_cards = Some([card1, card2]);
     state.action = action;
+    state.raise_amount = raise_amount;
 
     Ok(Some(format_recommendation(state)))
 }
@@ -579,7 +596,7 @@ fn format_board_analysis(state: &HandState) -> String {
     output
 }
 
-fn cmd_action(state: &mut HandState, action: Action) -> Result<Option<String>, PokerError> {
+fn cmd_action(state: &mut HandState, action: Action, args: &[&str]) -> Result<Option<String>, PokerError> {
     if state.hole_cards.is_none() {
         return Err(PokerError::WrongArgCount {
             command: match action {
@@ -592,6 +609,13 @@ fn cmd_action(state: &mut HandState, action: Action) -> Result<Option<String>, P
     }
 
     state.action = action;
+
+    if action == Action::FacingRaise {
+        state.raise_amount = args.first().and_then(|s| s.parse::<u64>().ok());
+    } else {
+        state.raise_amount = None;
+    }
+
     Ok(Some(format_recommendation(state)))
 }
 
@@ -623,19 +647,30 @@ pub fn format_recommendation(state: &HandState) -> String {
             "CALL".cyan().bold(),
             "Call the raise — good enough to see a flop but not to re-raise.",
         ),
+        preflop::Recommendation::Check => (
+            "CHECK".cyan().bold(),
+            "You're in the big blind — check and see a free flop.",
+        ),
     };
 
-    let action_label = match state.action {
-        Action::FirstIn => "",
-        Action::FacingLimp => "  (facing limp)",
-        Action::FacingRaise => "  (facing raise)",
+    let action_label = match (state.action, state.raise_amount, state.big_blind) {
+        (Action::FirstIn, _, _) => String::new(),
+        (Action::FacingLimp, _, _) => "  (facing limp)".to_string(),
+        (Action::FacingRaise, Some(amt), Some(bb)) if bb > 0 => {
+            let mult = amt as f64 / bb as f64;
+            format!("  (facing raise: {amt} = {mult:.1}x BB)")
+        }
+        (Action::FacingRaise, Some(amt), _) => format!("  (facing raise: {amt})"),
+        (Action::FacingRaise, None, _) => "  (facing raise)".to_string(),
     };
+
+    let sizing = format_sizing(state.big_blind, state.raise_amount, rec);
 
     format!(
         "Hand: {card1} {card2}  ({label} — {category})\n\
          Position: {pos} ({long}){action_label}\n\
          Recommendation: {rec}\n\
-         {desc}",
+         {desc}{sizing}",
         label = hole_type.label(),
         category = hole_type.category(),
         pos = position.short_name(),
@@ -643,6 +678,63 @@ pub fn format_recommendation(state: &HandState) -> String {
         rec = rec_colored,
         desc = rec_desc,
     )
+}
+
+fn format_sizing(big_blind: Option<u64>, raise_amount: Option<u64>, rec: preflop::Recommendation) -> String {
+    match (rec, big_blind, raise_amount) {
+        // Opening: 2.5-3x BB
+        (preflop::Recommendation::Open, Some(bb), _) => {
+            let low = bb * 5 / 2;
+            let high = bb * 3;
+            format!("\nSizing: 2.5–3x BB → {low}–{high}")
+        }
+        (preflop::Recommendation::Open, None, _) => {
+            "\nSizing: 2.5–3x BB".to_string()
+        }
+
+        // 3-bet: 3x the raise, or 7-10 BB if no raise amount known
+        (preflop::Recommendation::ThreeBet, Some(bb), Some(raise)) => {
+            let size = raise * 3;
+            let mult = size as f64 / bb as f64;
+            format!("\nSizing: 3x the raise → {size} ({mult:.0}x BB)")
+        }
+        (preflop::Recommendation::ThreeBet, None, Some(raise)) => {
+            let size = raise * 3;
+            format!("\nSizing: 3x the raise → {size}")
+        }
+        (preflop::Recommendation::ThreeBet, Some(bb), None) => {
+            let low = bb * 7;
+            let high = bb * 10;
+            format!("\nSizing: 3x the open (7–10 BB) → {low}–{high}")
+        }
+        (preflop::Recommendation::ThreeBet, None, None) => {
+            "\nSizing: 3x the open (typically 7–10 BB)".to_string()
+        }
+
+        // Iso-raise: 3-4x BB + 1 BB per limper
+        (preflop::Recommendation::IsoRaise, Some(bb), _) => {
+            let low = bb * 3;
+            let high = bb * 4;
+            format!("\nSizing: 3–4x BB + 1 BB per limper → {low}–{high} + {bb}/limper")
+        }
+        (preflop::Recommendation::IsoRaise, None, _) => {
+            "\nSizing: 3–4x BB + 1 BB per limper".to_string()
+        }
+
+        // Call: show call cost if known
+        (preflop::Recommendation::Call, Some(bb), Some(raise)) => {
+            let mult = raise as f64 / bb as f64;
+            format!("\nCost to call: {raise} ({mult:.1}x BB)")
+        }
+        (preflop::Recommendation::Call, _, Some(raise)) => {
+            format!("\nCost to call: {raise}")
+        }
+        (preflop::Recommendation::Call, _, None) => {
+            "\nCost to call: match the raise".to_string()
+        }
+
+        _ => String::new(),
+    }
 }
 
 fn cmd_players(state: &mut HandState, args: &[&str]) -> Result<Option<String>, PokerError> {
@@ -731,6 +823,33 @@ fn cmd_pos(state: &mut HandState, args: &[&str]) -> Result<Option<String>, Poker
     Ok(Some(output))
 }
 
+fn cmd_blinds(state: &mut HandState, args: &[&str]) -> Result<Option<String>, PokerError> {
+    if args.is_empty() {
+        return match state.big_blind {
+            Some(bb) => Ok(Some(format!("Big blind: {bb}"))),
+            None => Err(PokerError::WrongArgCount {
+                command: "blinds",
+                usage: "<big blind amount> — e.g. blinds 20",
+            }),
+        };
+    }
+
+    let bb: u64 = args[0].parse().map_err(|_| PokerError::WrongArgCount {
+        command: "blinds",
+        usage: "<big blind amount> — e.g. blinds 20",
+    })?;
+
+    if bb == 0 {
+        return Err(PokerError::WrongArgCount {
+            command: "blinds",
+            usage: "<big blind amount> — must be > 0",
+        });
+    }
+
+    state.big_blind = Some(bb);
+    Ok(Some(format!("Big blind set to {bb}. Sizing guidance will use this amount.")))
+}
+
 fn cmd_ranges() -> Result<Option<String>, PokerError> {
     let info = "\
 About These Ranges
@@ -767,7 +886,7 @@ fn cmd_help() -> Result<Option<String>, PokerError> {
 Poker CLI — Preflop Study Tool
 
 Commands:                                Shortcuts:
-  deal <c1> <c2> [limp|raise]              d<c1><c2>[l|r]  e.g. d2h8s, dThKcr
+  deal <c1> <c2> [limp|raise [amt]]         d<c1><c2>[l|r[amt]]  e.g. d2h8s, dThKcr60
   flop <c1> <c2> <c3>                      f<c1><c2><c3>   e.g. f2h3s4c
   turn <card>                              t<card>         e.g. t5d
   river <card>                             r<card>         e.g. r6h
@@ -775,10 +894,11 @@ Commands:                                Shortcuts:
   odds                                     Show outs, equity, and bet suggestion
   odds <bet> <pot>                         b<bet>p<pot>    e.g. b25p50
   limp                 Facing a limp (re-shows recommendation)
-  raise                Facing a raise (re-shows recommendation)
+  raise [amount]       Facing a raise (re-shows recommendation)
   first                Reset to first-in (re-shows recommendation)
   players <2-9>        Set number of players at the table
   pos <position>       Set your current position
+  blinds <amount>      Set big blind for sizing guidance (e.g. blinds 20)
   ranges               Info about the ranges and how they work
   help                 Show this help
   quit / exit          Exit the program
@@ -798,7 +918,11 @@ pub fn format_status(state: &HandState) -> String {
         .map(|p| p.short_name().to_string())
         .unwrap_or_else(|| "?".to_string());
 
-    let mut parts = vec![format!("[{pos_name} · {} players]", state.num_players)];
+    let blinds_str = match state.big_blind {
+        Some(bb) => format!(" · BB {bb}"),
+        None => String::new(),
+    };
+    let mut parts = vec![format!("[{pos_name} · {} players{blinds_str}]", state.num_players)];
 
     if let Some([c1, c2]) = &state.hole_cards {
         let hole_type = HoleCardType::from_cards(*c1, *c2);

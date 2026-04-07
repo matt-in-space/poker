@@ -9,6 +9,7 @@ pub enum Recommendation {
     ThreeBet,
     IsoRaise,
     Call,
+    Check,
 }
 
 #[derive(Debug, Clone)]
@@ -231,12 +232,16 @@ pub fn recommend(
     let in_3bet = threebet_range.contains(&key);
     let in_open = open_range.contains(&key);
 
+    let is_bb = position == Position::BB;
+
     match action {
         Action::FirstIn => {
             if in_3bet {
                 Recommendation::ThreeBet
             } else if in_open {
                 Recommendation::Open
+            } else if is_bb {
+                Recommendation::Check
             } else {
                 Recommendation::Fold
             }
@@ -244,6 +249,8 @@ pub fn recommend(
         Action::FacingLimp => {
             if in_3bet || in_open {
                 Recommendation::IsoRaise
+            } else if is_bb {
+                Recommendation::Check
             } else {
                 Recommendation::Fold
             }
@@ -402,5 +409,29 @@ mod tests {
         // Trash facing a raise is fold
         let trash = make_hole("7h", "2d");
         assert_eq!(recommend(&trash, Position::BTN, 9, Action::FacingRaise), Recommendation::Fold);
+    }
+
+    #[test]
+    fn test_bb_check_first_in() {
+        // BB with trash and no raise should check, not fold
+        let trash = make_hole("7h", "2d");
+        assert_eq!(recommend(&trash, Position::BB, 9, Action::FirstIn), Recommendation::Check);
+        // BB with a good hand should still raise
+        let good = make_hole("Ah", "Kh");
+        assert_ne!(recommend(&good, Position::BB, 9, Action::FirstIn), Recommendation::Check);
+    }
+
+    #[test]
+    fn test_bb_check_facing_limp() {
+        // BB with trash facing a limp should check, not fold
+        let trash = make_hole("7h", "2d");
+        assert_eq!(recommend(&trash, Position::BB, 9, Action::FacingLimp), Recommendation::Check);
+    }
+
+    #[test]
+    fn test_bb_fold_facing_raise() {
+        // BB with trash facing a raise should still fold
+        let trash = make_hole("7h", "2d");
+        assert_eq!(recommend(&trash, Position::BB, 9, Action::FacingRaise), Recommendation::Fold);
     }
 }
