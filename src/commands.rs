@@ -692,23 +692,23 @@ fn format_sizing(big_blind: Option<u64>, raise_amount: Option<u64>, rec: preflop
             "\nSizing: 2.5–3x BB".to_string()
         }
 
-        // 3-bet: 3x the raise, or 7-10 BB if no raise amount known
+        // 3-bet: 3x the raise if known, otherwise 7-10x BB
         (preflop::Recommendation::ThreeBet, Some(bb), Some(raise)) => {
             let size = raise * 3;
             let mult = size as f64 / bb as f64;
-            format!("\nSizing: 3x the raise → {size} ({mult:.0}x BB)")
+            format!("\nSizing: re-raise to {size} ({mult:.0}x BB)")
         }
         (preflop::Recommendation::ThreeBet, None, Some(raise)) => {
             let size = raise * 3;
-            format!("\nSizing: 3x the raise → {size}")
+            format!("\nSizing: re-raise to {size}")
         }
         (preflop::Recommendation::ThreeBet, Some(bb), None) => {
             let low = bb * 7;
             let high = bb * 10;
-            format!("\nSizing: 3x the open (7–10 BB) → {low}–{high}")
+            format!("\nSizing: re-raise to {low}–{high} (7–10x BB)")
         }
         (preflop::Recommendation::ThreeBet, None, None) => {
-            "\nSizing: 3x the open (typically 7–10 BB)".to_string()
+            "\nSizing: re-raise to 7–10x BB".to_string()
         }
 
         // Iso-raise: 3-4x BB + 1 BB per limper
