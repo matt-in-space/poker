@@ -892,7 +892,10 @@ pub fn format_status(state: &HandState) -> String {
         Some(bb) => format!(" · BB {bb}"),
         None => String::new(),
     };
-    let mut parts = vec![format!("[{pos_name} · {} players{blinds_str}]", state.num_players)];
+    let mut parts = vec![format!(
+        "[{pos_name} · {} players{blinds_str} · {}]",
+        state.num_players, state.street
+    )];
 
     if let Some([c1, c2]) = &state.hole_cards {
         let hole_type = HoleCardType::from_cards(*c1, *c2);
