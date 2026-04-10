@@ -754,8 +754,19 @@ fn cmd_players(state: &mut HandState, args: &[&str]) -> Result<Option<String>, P
         usage: "<2-9>",
     })?;
 
+    // Capture the current position (if any) before changing the table size,
+    // so we can try to preserve it across the resize.
+    let prev_position = state.position();
+
     state.num_players = n.clamp(2, 9);
-    state.position_index = 0;
+
+    let position_preserved = match prev_position {
+        Some(pos) if state.set_position(pos) => true,
+        _ => {
+            state.position_index = 0;
+            false
+        }
+    };
 
     let positions = position::positions_for_table_size(state.num_players);
     let train: Vec<&str> = positions.iter().map(|p| p.short_name()).collect();
@@ -775,8 +786,9 @@ fn cmd_players(state: &mut HandState, args: &[&str]) -> Result<Option<String>, P
 
     if state.configured {
         let pos = state.position().unwrap();
+        let label = if position_preserved { "Position:" } else { "Position reset to" };
         output.push_str(&format!(
-            "Position reset to {} ({}).",
+            "{label} {} ({}).",
             pos.short_name(),
             pos.long_name()
         ));

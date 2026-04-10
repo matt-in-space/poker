@@ -352,6 +352,19 @@ mod tests {
     }
 
     #[test]
+    fn test_8742_with_5_not_straight() {
+        // 8 7 5 4 2 — gap at 6 and 3, this is high card, NOT a straight
+        let hand = evaluate(
+            &[c("8s"), c("7c")],
+            &[c("5c"), c("4s"), c("2h")],
+        );
+        assert!(
+            !matches!(hand, MadeHand::Straight(_)),
+            "expected high card, got {hand:?}"
+        );
+    }
+
+    #[test]
     fn test_two_pair() {
         let hand = evaluate(
             &[c("Ah"), c("Kd")],
