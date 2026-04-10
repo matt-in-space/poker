@@ -411,38 +411,68 @@ fn bet_suggestion(made: &eval::MadeHand, equity: f64) -> String {
 
 fn do_odds(state: &HandState, bet: u64, pot: u64) -> Result<Option<String>, PokerError> {
     let odds = PotOdds::calculate(pot, bet);
+
+    let pct = if pot > 0 {
+        (bet as f64 / pot as f64) * 100.0
+    } else {
+        0.0
+    };
+    let sizing_label = if pct <= 20.0 {
+        "very small, under 1/4 pot"
+    } else if pct <= 40.0 {
+        "small, 1/4 to 1/3 pot"
+    } else if pct <= 60.0 {
+        "half pot"
+    } else if pct <= 80.0 {
+        "2/3 pot"
+    } else if pct <= 110.0 {
+        "pot-sized"
+    } else {
+        "overbet"
+    };
+
     let mut output = format!(
-        "Pot odds: call ${bet} into ${pot} → need {:.1}% equity",
+        "${bet} into ${pot} pot ({pct:.0}% pot — {sizing_label})\nPot odds: need {:.1}% equity to break even",
         odds.required_equity
     );
 
     if let Some(hole) = &state.hole_cards {
-        if !state.board.is_empty() && state.street != Street::River {
-            let analysis = outs::analyze_outs(hole, &state.board, state.street);
-            let eq = analysis.equity_percent;
-
-            if analysis.total_outs > 0 {
-                output.push_str(&format!(
-                    "\nYou have: ~{:.0}% equity ({} outs)",
-                    eq, analysis.total_outs
-                ));
-            } else {
-                output.push_str("\nYou have: ~0% draw equity (no outs)");
-            }
-
-            if eq >= odds.required_equity {
-                output.push_str(&format!(
-                    "\nVerdict: {}",
-                    "CALL — profitable".green().bold()
-                ));
-            } else {
-                output.push_str(&format!(
-                    "\nVerdict: {}",
-                    "FOLD — not enough equity".red()
-                ));
-            }
-        } else if state.board.is_empty() {
+        if state.board.is_empty() {
             output.push_str("\n(Deal a flop to compare against your equity)");
+        } else {
+            let made = eval::evaluate(hole, &state.board);
+            output.push_str(&format!("\n\nYour hand: {}", made.to_string().bold()));
+
+            let eq = if state.street == Street::River {
+                0.0
+            } else {
+                let analysis = outs::analyze_outs(hole, &state.board, state.street);
+                if analysis.total_outs > 0 {
+                    output.push_str(&format!(
+                        "\nYou have: ~{:.0}% equity ({} outs)",
+                        analysis.equity_percent, analysis.total_outs
+                    ));
+                } else {
+                    output.push_str("\nYou have: ~0% draw equity (no outs)");
+                }
+                analysis.equity_percent
+            };
+
+            output.push_str(&format!("\n{}", bet_suggestion(&made, eq)));
+
+            if state.street != Street::River {
+                if eq >= odds.required_equity {
+                    output.push_str(&format!(
+                        "\n\nVerdict: {}",
+                        "CALL — profitable".green().bold()
+                    ));
+                } else {
+                    output.push_str(&format!(
+                        "\n\nVerdict: {}",
+                        "FOLD — not enough equity".red()
+                    ));
+                }
+            }
         }
     }
 
