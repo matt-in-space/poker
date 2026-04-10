@@ -115,7 +115,7 @@ fn main() {
         None => String::new(),
     };
     println!(
-        "\nReady! You're on the {} ({} players{blinds_msg}). Type 'deal <c1> <c2>' to start.\n",
+        "\nReady! You're on the {} ({} players{blinds_msg}). Enter your hole cards (e.g. AhKs) to start.\n",
         pos.short_name().bold(),
         state.num_players
     );

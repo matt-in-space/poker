@@ -18,7 +18,7 @@ The binary will be at `target/release/poker`.
 cargo run
 ```
 
-On startup you'll configure the number of players, your starting position, and optionally the big blind amount for sizing guidance. Then deal cards and get recommendations.
+On startup you'll configure the number of players, your starting position, and optionally the big blind amount for sizing guidance. Then enter cards as the hand progresses — the tool infers what street you're on.
 
 ### Example Session
 
@@ -31,75 +31,71 @@ Positions: UTG -> HJ -> CO -> BTN -> SB -> BB
 Your position? btn
 Big blind amount? (enter to skip): 20
 
-Ready! You're on the BTN (6 players, BB 20). Type 'deal <c1> <c2>' to start.
+Ready! You're on the BTN (6 players, BB 20). Enter your hole cards (e.g. AhKs) to start.
 
-BTN> dAhKsr60
+BTN> AhKsr60
   Hand: Ah Ks  (AKo — Offsuit broadway)
   Position: BTN (Button)  (facing raise: 60 = 3.0x BB)
   Recommendation: 3-BET
   Sizing: re-raise to 180 (9x BB)
 
-BTN> new
+BTN> n
   Position advanced to SB (Small Blind).
 
-SB> d7h2d
+SB> 7h2d
   Hand: 7h 2d  (72o — Offsuit)
   Position: SB (Small Blind)
   Recommendation: FOLD
 
-SB> new
-BB> d9s4c
+SB> n
+BB> 9s4c
   Hand: 9s 4c  (94o — Offsuit)
   Position: BB (Big Blind)
   Recommendation: CHECK
   You're in the big blind — check and see a free flop.
 
-BB> f9h4d2c
+BB> 9h4d2c
   Board: 9h 4d 2c  (Two pair, Nines and Fours)
   6 outs · ~24% equity
 
+BB> 5d
+  Board: 9h 4d 2c 5d
+  ...
+
 BB> odds
-  Street: flop
+  Street: turn
   Hand: Two pair, Nines and Fours
   ...
 ```
 
-### Compact Shortcuts
+### Card Entry
 
-Most commands have single-letter shortcuts for fast input during play:
+Card input is inferred from the current street — no command needed. Just type the cards:
 
-| Full command | Shortcut | Example |
-|---|---|---|
-| `deal Ah Ks` | `dAhKs` | |
-| `deal Ah Ks raise 60` | `dAhKsr60` | |
-| `deal 2h 8s limp` | `d2h8sl` | |
-| `flop 2h 3s 4c` | `f2h3s4c` | |
-| `turn 5d` | `t5d` | |
-| `river 6h` | `r6h` | |
-| `odds 25 50` | `b25p50` | bet 25 into pot of 50 |
-| `new` | `n` | |
+| Input | Action |
+|---|---|
+| `AhKs` | Deal hole cards (preflop) |
+| `AhKsr60` | Hole cards facing a 60-chip raise (`l` = limp, `r` = raise) |
+| `2h3s4c` | Flop |
+| `5d` | Turn |
+| `6h` | River |
+| `n` / `new` | Start a new hand (advances position) |
+
+Spaces between cards are tolerated (`2h 3s 4c` works too).
 
 ## Commands
 
-### Preflop
+### Hand Actions
 
 | Command | Description |
 |---|---|
-| `deal <c1> <c2> [limp\|raise [amount]]` | Deal hole cards, get preflop recommendation |
-| `new` | Advance position and reset for the next hand |
-| `limp` | Re-evaluate as if facing a limp |
+| `n` / `new` | Advance position and reset for the next hand |
+| `limp` | Re-evaluate current hand as if facing a limp |
 | `raise [amount]` | Re-evaluate as if facing a raise (optionally with the raise size) |
 | `first` | Reset to first-in action |
-
-### Postflop
-
-| Command | Description |
-|---|---|
-| `flop <c1> <c2> <c3>` | Deal the flop — shows made hand, outs, and equity |
-| `turn <card>` | Deal the turn |
-| `river <card>` | Deal the river |
 | `odds` | Show outs, equity, and bet suggestion for the current board |
 | `odds <bet> <pot>` | Calculate pot odds for a specific bet and pot size |
+| `b<bet>p<pot>` | Shorthand for `odds` — e.g. `b25p50` (bet 25 into pot of 50) |
 
 ### Configuration
 

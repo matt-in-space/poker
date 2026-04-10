@@ -32,13 +32,17 @@ impl fmt::Display for PokerError {
                 )
             }
             PokerError::WrongArgCount { command, usage } => {
-                write!(f, "Usage: {command} {usage}")
+                if command.is_empty() {
+                    write!(f, "Usage: {usage}")
+                } else {
+                    write!(f, "Usage: {command} {usage}")
+                }
             }
             PokerError::NotConfigured => {
                 write!(f, "Not configured yet — use 'players' and 'pos' first")
             }
             PokerError::NoDeal => {
-                write!(f, "No hand in progress — use 'deal' first")
+                write!(f, "No hand in progress — enter hole cards first (e.g. AhKs)")
             }
             PokerError::WrongStreet { expected } => {
                 write!(f, "{expected}")

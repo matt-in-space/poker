@@ -11,49 +11,32 @@ use crate::preflop::{self, HoleCardType};
 use crate::table_display;
 
 pub fn execute(state: &mut HandState, input: &str) -> Result<Option<String>, PokerError> {
-    let parts: Vec<&str> = input.trim().split_whitespace().collect();
-    if parts.is_empty() {
+    let input = input.trim();
+    if input.is_empty() {
         return Ok(None);
     }
 
+    // Auto-detect raw card input: starts with a rank char.
+    // Routes to deal/flop/turn/river based on current street.
+    if input.chars().next().map(is_rank_char).unwrap_or(false) {
+        return parse_auto_cards(state, input);
+    }
+
+    let parts: Vec<&str> = input.split_whitespace().collect();
     let cmd = parts[0].to_lowercase();
     let args = &parts[1..];
 
-    // Check for compact shortcuts: d=deal, f=flop, t=turn, r=river, b=odds
-    if cmd.len() > 1 {
-        if let Some(rest) = cmd.strip_prefix('d') {
-            if cmd != "deal" {
-                return parse_compact_deal(state, rest);
-            }
-        }
-        if let Some(rest) = cmd.strip_prefix('f') {
-            if cmd != "first" && cmd != "firstin" && cmd != "flop" {
-                return parse_compact_flop(state, rest);
-            }
-        }
-        if let Some(rest) = cmd.strip_prefix('t') {
-            if cmd != "turn" {
-                return parse_compact_single_card(state, rest, Street::Turn);
-            }
-        }
-        if let Some(rest) = cmd.strip_prefix('r') {
-            if cmd != "raise" && cmd != "ranges" && cmd != "river" {
-                return parse_compact_single_card(state, rest, Street::River);
-            }
-        }
-        if let Some(rest) = cmd.strip_prefix('b') {
-            if !rest.is_empty() && cmd != "blinds" {
-                return parse_compact_odds(state, rest);
-            }
-        }
+    // Compact odds shortcut: b<bet>p<pot>
+    if cmd.len() > 1
+        && cmd != "blinds"
+        && let Some(rest) = cmd.strip_prefix('b')
+        && !rest.is_empty()
+    {
+        return parse_compact_odds(state, rest);
     }
 
     match cmd.as_str() {
         "n" | "new" => cmd_new(state),
-        "deal" => cmd_deal(state, args),
-        "flop" => cmd_flop(state, args),
-        "turn" => cmd_turn(state, args),
-        "river" => cmd_river(state, args),
         "odds" => cmd_odds(state, args),
         "limp" => cmd_action(state, Action::FacingLimp, &[]),
         "raise" => cmd_action(state, Action::FacingRaise, args),
@@ -70,37 +53,57 @@ pub fn execute(state: &mut HandState, input: &str) -> Result<Option<String>, Pok
     }
 }
 
-// --- Compact shortcut parsers ---
+// --- Auto card-input parsing ---
+
+fn is_rank_char(c: char) -> bool {
+    matches!(
+        c,
+        '1'..='9' | 'T' | 'J' | 'Q' | 'K' | 'A' | 't' | 'j' | 'q' | 'k' | 'a'
+    )
+}
 
 /// Split a string into cards by finding suit characters (s, h, d, c).
 fn find_suit_positions(chars: &[char]) -> Vec<usize> {
     let mut positions: Vec<usize> = chars
         .iter()
         .enumerate()
-        .filter(|(_, c)| matches!(c, 's' | 'h' | 'c'))
+        .filter(|(_, c)| matches!(c, 's' | 'h' | 'c' | 'd'))
         .map(|(i, _)| i)
         .collect();
-
-    // 'd' is both a suit (diamonds) and command prefix — only count if after a rank char
-    for (i, &c) in chars.iter().enumerate() {
-        if c == 'd' && i > 0 {
-            positions.push(i);
-        }
-    }
     positions.sort();
     positions
 }
 
-/// Parse compact deal: "2h8s", "ThKs", "AhKsr" (trailing r=raise, l=limp)
-fn parse_compact_deal(state: &mut HandState, input: &str) -> Result<Option<String>, PokerError> {
-    let lower = input.to_lowercase();
+/// Route raw card input based on the current street.
+fn parse_auto_cards(state: &mut HandState, input: &str) -> Result<Option<String>, PokerError> {
+    if !state.configured {
+        return Err(PokerError::NotConfigured);
+    }
+
+    // Tolerate spaces between cards: "2h 3s 4c" works as well as "2h3s4c".
+    let cleaned: String = input.chars().filter(|c| !c.is_whitespace()).collect();
+
+    match (state.street, state.hole_cards.is_some()) {
+        (Street::Preflop, false) => parse_deal_input(state, &cleaned),
+        (Street::Preflop, true) => parse_board_cards(state, &cleaned, 3),
+        (Street::Flop, _) => parse_board_cards(state, &cleaned, 1),
+        (Street::Turn, _) => parse_board_cards(state, &cleaned, 1),
+        (Street::River, _) => Err(PokerError::WrongStreet {
+            expected: "River already dealt — type 'n' for the next hand",
+        }),
+    }
+}
+
+/// Parse hole cards with optional trailing action suffix: "2h8s", "AhKsr60", "ThKcl"
+fn parse_deal_input(state: &mut HandState, cleaned: &str) -> Result<Option<String>, PokerError> {
+    let lower = cleaned.to_lowercase();
     let chars: Vec<char> = lower.chars().collect();
     let suits = find_suit_positions(&chars);
 
     if suits.len() < 2 {
         return Err(PokerError::WrongArgCount {
-            command: "d",
-            usage: "<card1><card2> — e.g. d2h8s, dThKc",
+            command: "",
+            usage: "<c1><c2>[l|r[amount]] — e.g. AhKs, 2h8sl, AhKsr60",
         });
     }
 
@@ -115,32 +118,7 @@ fn parse_compact_deal(state: &mut HandState, input: &str) -> Result<Option<Strin
         return Err(PokerError::DuplicateCard(card1));
     }
 
-    let (action, raise_amount) = if remainder.is_empty() {
-        (Action::FirstIn, None)
-    } else if remainder == "l" || remainder == "limp" {
-        (Action::FacingLimp, None)
-    } else if remainder == "r" || remainder == "raise" {
-        (Action::FacingRaise, None)
-    } else if let Some(amount_str) = remainder.strip_prefix('r') {
-        match amount_str.parse::<u64>() {
-            Ok(amt) if amt > 0 => (Action::FacingRaise, Some(amt)),
-            _ => {
-                return Err(PokerError::WrongArgCount {
-                    command: "d",
-                    usage: "<card1><card2>[l|r[amount]] — e.g. d2h8s, dThKcr, dAhKsr60",
-                });
-            }
-        }
-    } else {
-        return Err(PokerError::WrongArgCount {
-            command: "d",
-            usage: "<card1><card2>[l|r[amount]] — e.g. d2h8s, dThKcr, dAhKsr60",
-        });
-    };
-
-    if !state.configured {
-        return Err(PokerError::NotConfigured);
-    }
+    let (action, raise_amount) = parse_action_suffix(&remainder)?;
 
     state.hole_cards = Some([card1, card2]);
     state.action = action;
@@ -149,43 +127,64 @@ fn parse_compact_deal(state: &mut HandState, input: &str) -> Result<Option<Strin
     Ok(Some(format_recommendation(state)))
 }
 
-/// Parse compact flop: "2h3s4c"
-fn parse_compact_flop(state: &mut HandState, input: &str) -> Result<Option<String>, PokerError> {
-    let lower = input.to_lowercase();
+fn parse_action_suffix(rest: &str) -> Result<(Action, Option<u64>), PokerError> {
+    if rest.is_empty() {
+        return Ok((Action::FirstIn, None));
+    }
+    if rest == "l" || rest == "limp" {
+        return Ok((Action::FacingLimp, None));
+    }
+    if rest == "r" || rest == "raise" {
+        return Ok((Action::FacingRaise, None));
+    }
+    if let Some(amt_str) = rest.strip_prefix('r')
+        && let Ok(amt) = amt_str.parse::<u64>()
+        && amt > 0
+    {
+        return Ok((Action::FacingRaise, Some(amt)));
+    }
+    Err(PokerError::WrongArgCount {
+        command: "",
+        usage: "<c1><c2>[l|r[amount]] — e.g. AhKs, 2h8sl, AhKsr60",
+    })
+}
+
+/// Parse exactly `expected` cards (1 or 3) with no trailing junk.
+fn parse_board_cards(
+    state: &mut HandState,
+    cleaned: &str,
+    expected: usize,
+) -> Result<Option<String>, PokerError> {
+    let lower = cleaned.to_lowercase();
     let chars: Vec<char> = lower.chars().collect();
     let suits = find_suit_positions(&chars);
 
-    if suits.len() < 3 {
-        return Err(PokerError::WrongArgCount {
-            command: "f",
-            usage: "<c1><c2><c3> — e.g. f2h3s4c",
-        });
+    let usage: &'static str = match (expected, state.street) {
+        (3, _) => "flop: <c1><c2><c3> — e.g. 2h3s4c",
+        (1, Street::Flop) => "turn: <card> — e.g. 5d",
+        (1, Street::Turn) => "river: <card> — e.g. 6h",
+        _ => "card",
+    };
+
+    if suits.len() != expected || suits[expected - 1] != chars.len() - 1 {
+        return Err(PokerError::WrongArgCount { command: "", usage });
     }
 
-    let c1_str: String = chars[..=suits[0]].iter().collect();
-    let c2_str: String = chars[suits[0] + 1..=suits[1]].iter().collect();
-    let c3_str: String = chars[suits[1] + 1..=suits[2]].iter().collect();
+    let mut cards = Vec::with_capacity(expected);
+    let mut start = 0;
+    for &end in &suits {
+        let s: String = chars[start..=end].iter().collect();
+        cards.push(Card::parse(&s)?);
+        start = end + 1;
+    }
 
-    let cards = [
-        Card::parse(&c1_str)?,
-        Card::parse(&c2_str)?,
-        Card::parse(&c3_str)?,
-    ];
-
-    do_flop(state, &cards)
-}
-
-/// Parse compact single card for turn/river: "5d", "Kh"
-fn parse_compact_single_card(
-    state: &mut HandState,
-    input: &str,
-    next_street: Street,
-) -> Result<Option<String>, PokerError> {
-    let card = Card::parse(input)?;
-
-    match next_street {
-        Street::Turn => do_turn(state, card),
-        Street::River => do_river(state, card),
+    match (state.street, state.hole_cards.is_some()) {
+        (Street::Preflop, true) => {
+            let arr: [Card; 3] = [cards[0], cards[1], cards[2]];
+            do_flop(state, &arr)
+        }
+        (Street::Flop, _) => do_turn(state, cards[0]),
+        (Street::Turn, _) => do_river(state, cards[0]),
         _ => unreachable!(),
     }
 }
@@ -228,89 +227,6 @@ fn cmd_new(state: &mut HandState) -> Result<Option<String>, PokerError> {
     )))
 }
 
-fn cmd_deal(state: &mut HandState, args: &[&str]) -> Result<Option<String>, PokerError> {
-    if !state.configured {
-        return Err(PokerError::NotConfigured);
-    }
-
-    if args.len() < 2 || args.len() > 4 {
-        return Err(PokerError::WrongArgCount {
-            command: "deal",
-            usage: "<card1> <card2> [limp|raise [amount]]",
-        });
-    }
-
-    let card1 = Card::parse(args[0])?;
-    let card2 = Card::parse(args[1])?;
-
-    if card1 == card2 {
-        return Err(PokerError::DuplicateCard(card1));
-    }
-
-    let (action, raise_amount) = if let Some(action_str) = args.get(2) {
-        match action_str.to_lowercase().as_str() {
-            "limp" => (Action::FacingLimp, None),
-            "raise" => {
-                let amt = args.get(3).and_then(|s| s.parse::<u64>().ok());
-                (Action::FacingRaise, amt)
-            }
-            _ => {
-                return Err(PokerError::WrongArgCount {
-                    command: "deal",
-                    usage: "<card1> <card2> [limp|raise [amount]]",
-                });
-            }
-        }
-    } else {
-        (Action::FirstIn, None)
-    };
-
-    state.hole_cards = Some([card1, card2]);
-    state.action = action;
-    state.raise_amount = raise_amount;
-
-    Ok(Some(format_recommendation(state)))
-}
-
-fn cmd_flop(state: &mut HandState, args: &[&str]) -> Result<Option<String>, PokerError> {
-    if args.len() != 3 {
-        return Err(PokerError::WrongArgCount {
-            command: "flop",
-            usage: "<card1> <card2> <card3>",
-        });
-    }
-
-    let cards = [
-        Card::parse(args[0])?,
-        Card::parse(args[1])?,
-        Card::parse(args[2])?,
-    ];
-
-    do_flop(state, &cards)
-}
-
-fn cmd_turn(state: &mut HandState, args: &[&str]) -> Result<Option<String>, PokerError> {
-    if args.len() != 1 {
-        return Err(PokerError::WrongArgCount {
-            command: "turn",
-            usage: "<card>",
-        });
-    }
-    let card = Card::parse(args[0])?;
-    do_turn(state, card)
-}
-
-fn cmd_river(state: &mut HandState, args: &[&str]) -> Result<Option<String>, PokerError> {
-    if args.len() != 1 {
-        return Err(PokerError::WrongArgCount {
-            command: "river",
-            usage: "<card>",
-        });
-    }
-    let card = Card::parse(args[0])?;
-    do_river(state, card)
-}
-
 fn cmd_odds(state: &mut HandState, args: &[&str]) -> Result<Option<String>, PokerError> {
     if args.is_empty() {
         return do_hand_summary(state);
@@ -343,7 +259,7 @@ fn do_flop(state: &mut HandState, cards: &[Card; 3]) -> Result<Option<String>, P
     }
     if state.street != Street::Preflop {
         return Err(PokerError::WrongStreet {
-            expected: "Flop already set — use 'turn' or 't' for the next card",
+            expected: "Flop already set — enter the turn card (e.g. 5d)",
         });
     }
 
@@ -360,7 +276,7 @@ fn do_turn(state: &mut HandState, card: Card) -> Result<Option<String>, PokerErr
     }
     if state.street != Street::Flop {
         return Err(PokerError::WrongStreet {
-            expected: "Use 'flop' or 'f' first",
+            expected: "Enter the flop first (e.g. 2h3s4c)",
         });
     }
 
@@ -377,7 +293,7 @@ fn do_river(state: &mut HandState, card: Card) -> Result<Option<String>, PokerEr
     }
     if state.street != Street::Turn {
         return Err(PokerError::WrongStreet {
-            expected: "Use 'turn' or 't' first",
+            expected: "Enter the turn first (e.g. 5d)",
         });
     }
 
@@ -901,23 +817,31 @@ fn cmd_help() -> Result<Option<String>, PokerError> {
     let help = "\
 Poker CLI — Preflop Study Tool
 
-Commands:                                Shortcuts:
-  deal <c1> <c2> [limp|raise [amt]]         d<c1><c2>[l|r[amt]]  e.g. d2h8s, dThKcr60
-  flop <c1> <c2> <c3>                      f<c1><c2><c3>   e.g. f2h3s4c
-  turn <card>                              t<card>         e.g. t5d
-  river <card>                             r<card>         e.g. r6h
-  new                                      n
-  odds                                     Show outs, equity, and bet suggestion
-  odds <bet> <pot>                         b<bet>p<pot>    e.g. b25p50
-  limp                 Facing a limp (re-shows recommendation)
-  raise [amount]       Facing a raise (re-shows recommendation)
-  first                Reset to first-in (re-shows recommendation)
-  players <2-9>        Set number of players at the table
-  pos <position>       Set your current position
-  blinds <amount>      Set big blind for sizing guidance (e.g. blinds 20)
-  ranges               Info about the ranges and how they work
-  help                 Show this help
-  quit / exit          Exit the program
+Card entry (no command — inferred from current street):
+  AhKs            Hole cards (preflop)
+  AhKsr60         Hole cards facing a 60-chip raise   (l = limp, r = raise)
+  2h3s4c          Flop
+  5d              Turn
+  6h              River
+  n / new         Start a new hand (advances position)
+
+Action override (re-evaluates current hand):
+  limp            Treat as facing a limp
+  raise [amount]  Treat as facing a raise
+  first           Reset to first-in
+
+Pot odds:
+  odds                  Show outs, equity, and bet suggestion
+  odds <bet> <pot>      Pot odds for a specific bet
+  b<bet>p<pot>          Shorthand — e.g. b25p50
+
+Setup:
+  players <2-9>     Set number of players at the table
+  pos <position>    Set your current position
+  blinds <amount>   Set big blind for sizing guidance (e.g. blinds 20)
+  ranges            Info about the ranges and how they work
+  help              Show this help
+  quit / exit       Exit the program
 
 Card notation: rank + suit (e.g. As, Td, 2c, KH)
   Ranks: 2 3 4 5 6 7 8 9 T J Q K A  (10 also accepted for T)
