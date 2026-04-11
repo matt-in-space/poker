@@ -36,6 +36,11 @@ pub struct OutsAnalysis {
     pub draws: Vec<Draw>,
     pub total_outs: u8,
     pub equity_percent: f64,
+    pub backdoor_equity: f64,
+}
+
+fn is_backdoor(draw: &Draw) -> bool {
+    matches!(draw.draw_type, DrawType::BackdoorFlushDraw)
 }
 
 pub fn analyze_outs(hole: &[Card; 2], board: &[Card], street: Street) -> OutsAnalysis {
@@ -55,8 +60,14 @@ pub fn analyze_outs(hole: &[Card; 2], board: &[Card], street: Street) -> OutsAna
         draws.push(draw);
     }
 
-    // Deduplicate total outs
-    let all_outs: HashSet<Card> = draws.iter().flat_map(|d| d.outs.iter().copied()).collect();
+    // Total outs counts only real (one-card) draws. Backdoor draws are
+    // runner-runner and don't hit with a single card, so their cards are
+    // not outs — they contribute a small flat equity bonus instead.
+    let all_outs: HashSet<Card> = draws
+        .iter()
+        .filter(|d| !is_backdoor(d))
+        .flat_map(|d| d.outs.iter().copied())
+        .collect();
     let total_outs = all_outs.len() as u8;
 
     let multiplier = match street {
@@ -64,12 +75,18 @@ pub fn analyze_outs(hole: &[Card; 2], board: &[Card], street: Street) -> OutsAna
         Street::Turn => 2.0,
         _ => 0.0,
     };
-    let equity_percent = (total_outs as f64 * multiplier).min(100.0);
+
+    // ~4% per backdoor flush draw (≈ (10/47)·(9/46), the runner-runner odds).
+    let backdoor_equity = draws.iter().filter(|d| is_backdoor(d)).count() as f64 * 4.0;
+
+    let equity_percent =
+        (total_outs as f64 * multiplier + backdoor_equity).min(100.0);
 
     OutsAnalysis {
         draws,
         total_outs,
         equity_percent,
+        backdoor_equity,
     }
 }
 
@@ -333,6 +350,26 @@ mod tests {
         let overcards = analysis.draws.iter().find(|d| d.draw_type == DrawType::Overcards);
         assert!(overcards.is_some());
         assert_eq!(overcards.unwrap().outs.len(), 6); // 3 aces + 3 kings
+    }
+
+    #[test]
+    fn test_backdoor_flush_not_counted_as_outs() {
+        let hole = [c("Ah"), c("Kh")];
+        let board = [c("2h"), c("7s"), c("9c")];
+        let analysis = analyze_outs(&hole, &board, Street::Flop);
+
+        let backdoor = analysis
+            .draws
+            .iter()
+            .find(|d| d.draw_type == DrawType::BackdoorFlushDraw);
+        assert!(backdoor.is_some());
+
+        // Only overcards count toward total_outs (6: 3 aces + 3 kings).
+        // The backdoor flush's cards must NOT be summed in.
+        assert_eq!(analysis.total_outs, 6);
+        assert_eq!(analysis.backdoor_equity, 4.0);
+        // Equity = 6 * 4 (rule of 4) + 4 (backdoor bonus) = 28
+        assert_eq!(analysis.equity_percent, 28.0);
     }
 
     #[test]

@@ -447,10 +447,20 @@ fn do_odds(state: &HandState, bet: u64, pot: u64) -> Result<Option<String>, Poke
                 0.0
             } else {
                 let analysis = outs::analyze_outs(hole, &state.board, state.street);
+                let backdoor_note = if analysis.backdoor_equity > 0.0 {
+                    " + backdoor"
+                } else {
+                    ""
+                };
                 if analysis.total_outs > 0 {
                     output.push_str(&format!(
-                        "\nYou have: ~{:.0}% equity ({} outs)",
-                        analysis.equity_percent, analysis.total_outs
+                        "\nYou have: ~{:.0}% equity ({} outs{})",
+                        analysis.equity_percent, analysis.total_outs, backdoor_note
+                    ));
+                } else if analysis.backdoor_equity > 0.0 {
+                    output.push_str(&format!(
+                        "\nYou have: ~{:.0}% equity (backdoor draw only)",
+                        analysis.equity_percent
                     ));
                 } else {
                     output.push_str("\nYou have: ~0% draw equity (no outs)");
@@ -515,6 +525,10 @@ fn format_board_analysis(state: &HandState) -> String {
         } else {
             output.push('\n');
             for draw in &analysis.draws {
+                if draw.draw_type == outs::DrawType::BackdoorFlushDraw {
+                    output.push_str("  Backdoor flush draw (~4% — needs turn AND river)\n");
+                    continue;
+                }
                 let outs_str = draw
                     .outs
                     .iter()
@@ -528,10 +542,22 @@ fn format_board_analysis(state: &HandState) -> String {
                     outs_str
                 ));
             }
-            output.push_str(&format!(
-                "\nTotal: {} outs (~{:.0}% equity, {})\n",
-                analysis.total_outs, analysis.equity_percent, rule
-            ));
+            let base_equity = analysis.equity_percent - analysis.backdoor_equity;
+            if analysis.backdoor_equity > 0.0 {
+                output.push_str(&format!(
+                    "\nTotal: {} outs (~{:.0}%, {}) + ~{:.0}% backdoor ≈ ~{:.0}% equity\n",
+                    analysis.total_outs,
+                    base_equity,
+                    rule,
+                    analysis.backdoor_equity,
+                    analysis.equity_percent,
+                ));
+            } else {
+                output.push_str(&format!(
+                    "\nTotal: {} outs (~{:.0}% equity, {})\n",
+                    analysis.total_outs, analysis.equity_percent, rule
+                ));
+            }
         }
 
         output.push_str(&format!("\n{}", bet_suggestion(&made, analysis.equity_percent)));
@@ -920,6 +946,11 @@ pub fn format_status(state: &HandState) -> String {
                 parts.push(format!(
                     "{} · {} outs · ~{:.0}% equity",
                     made, analysis.total_outs, analysis.equity_percent
+                ));
+            } else if analysis.backdoor_equity > 0.0 {
+                parts.push(format!(
+                    "{} · backdoor draw · ~{:.0}% equity",
+                    made, analysis.equity_percent
                 ));
             } else {
                 parts.push(format!("{} · no draws", made));
